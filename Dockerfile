@@ -122,13 +122,18 @@ FROM debian:buster-slim as final
 
 COPY --from=downloader /opt/tini /usr/bin/tini
 
-RUN apt-get update && apt-get install -y --no-install-recommends default-jdk \
-    libffi-dev libleveldb-dev libev-dev \
-    libsodium-dev libpq-dev git socat inotify-tools \
-    python3 python3-pip python3-wheel python3-venv dnsutils curl \
+RUN apt-get update && apt-get install -y --no-install-recommends default-jdk libffi-dev libleveldb-dev libev-dev \
+    libsodium-dev libpq-dev git socat inotify-tools python3 python3-pip python3-wheel python3-venv dnsutils curl \
     && curl -sL https://deb.nodesource.com/setup_12.x  | bash - && \
     apt-get -y install nodejs &&\
     rm -rf /var/lib/apt/lists/*
+
+## Install cln-rest for RTL
+RUN mkdir -p /python-plugin/plugins \
+    && cd /python-plugin/plugins && \
+    git clone https://github.com/Ride-The-Lightning/c-lightning-REST.git && \
+    cd c-lightning-REST && \
+    npm install --only=production
 
 ## Install backup plugin
 RUN git clone https://github.com/lightningd/plugins.git && \
