@@ -5,6 +5,26 @@
 # * final: Copy the binaries required at runtime
 # The resulting image uploaded to dockerhub will only contain what is needed for runtime.
 # From the root of the repository, run "docker build -t yourimage:yourtag ."
+
+
+FROM debian:bullseye as test
+
+#RUN apt-get update && \
+#    apt-get -y --no-install-recommends install ca-certificates libffi-dev libssl-dev pkg-config libleveldb-dev git \
+#    python3 python3-pip python3-setuptools python3-mako python3-dev build-essential && \
+#    apt-get clean && \
+#    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+RUN apt-get update && apt-get install -y --no-install-recommends default-jdk libffi-dev libssl-dev pkg-config libleveldb-dev libev-dev \
+    libsodium-dev libpq-dev git socat inotify-tools python3 python3-pip python3-setuptools python3-mako python3-dev build-essential dnsutils curl \
+    && curl -sL https://deb.nodesource.com/setup_12.x  | bash - && \
+    apt-get -y install nodejs &&\
+    rm -rf /var/lib/apt/lists/*
+
+
+RUN git clone https://github.com/talaia-labs/python-teos.git && \
+    cd python-teos && pip3 install .
+
 FROM debian:buster-slim as downloader
 
 RUN set -ex \
@@ -68,6 +88,13 @@ RUN echo "(curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain nigh
     cargo install c-lightning-pruning-plugin
 
 
+FROM golang:buster as build-golang
+## Install peerswap
+COPY ./peerswap/ /tmp/peerswap
+RUN cd /tmp/peerswap && \
+    make release
+
+
 FROM debian:buster-slim as builder
 
 ENV LIGHTNINGD_VERSION=master
@@ -79,12 +106,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     ca-certificates autoconf build-essential libev-dev \
     autoconf-archive pkg-config
 
+
 RUN git clone https://github.com/ZmnSCPxj/clboss.git && \
     cd clboss && \
     autoreconf -i && \
     ./configure && make && \
     make install
-
 
 RUN wget -q https://zlib.net/zlib-1.2.11.tar.gz \
 && tar xvf zlib-1.2.11.tar.gz \
@@ -118,19 +145,25 @@ ENV PYTHON_VERSION=3
 RUN pip3 install mrkd
 RUN ./configure --prefix=/tmp/lightning_install --enable-static && make -j3 DEVELOPER=${DEVELOPER} && make install
 
-FROM debian:buster-slim as final
+FROM debian:bullseye as final
 
 COPY --from=downloader /opt/tini /usr/bin/tini
 
-RUN apt-get update && apt-get install -y --no-install-recommends default-jdk libffi-dev libleveldb-dev libev-dev \
-    libsodium-dev libpq-dev git socat inotify-tools python3 python3-pip python3-wheel python3-venv dnsutils curl \
+RUN apt-get update && apt-get install -y --no-install-recommends default-jdk libffi-dev libssl-dev pkg-config libleveldb-dev libev-dev \
+    libsodium-dev libpq-dev git socat inotify-tools python3 python3-pip python3-setuptools python3-mako python3-dev build-essential dnsutils curl \
     && curl -sL https://deb.nodesource.com/setup_12.x  | bash - && \
     apt-get -y install nodejs &&\
     rm -rf /var/lib/apt/lists/*
 
+RUN mkdir -p /python-plugin/plugins  && \
+    git clone https://github.com/talaia-labs/python-teos.git && \
+    cd python-teos && pip3 install . && \
+    cd watchtower-plugin && pip3 install -r requirements.txt
+
+
+
 ## Install cln-rest for RTL
-RUN mkdir -p /python-plugin/plugins \
-    && cd /python-plugin/plugins && \
+RUN cd /python-plugin/plugins && \
     git clone https://github.com/Ride-The-Lightning/c-lightning-REST.git && \
     cd c-lightning-REST && \
     npm install --only=production
@@ -150,6 +183,7 @@ RUN git clone https://github.com/clightning4j/btcli4j.git /plugins/btcli4j && \
 RUN curl -L https://github.com/fiatjaf/sparko/releases/download/v2.8/sparko_linux_amd64 --output /root/sparko_linux_amd64 && \
     chmod +x /root/sparko_linux_amd64
 
+
 COPY --from=builder /usr/local/bin /usr/local/bin
 
 ENV LIGHTNINGD_DATA=/root/.lightning
@@ -164,6 +198,8 @@ COPY --from=builder /tmp/lightning_install/ /usr/local/
 COPY --from=downloader /opt/bitcoin/bin /usr/bin
 COPY --from=downloader /opt/litecoin/bin /usr/bin
 COPY --from=build-rust /cargo/bin/c-lightning-pruning-plugin /usr/bin/
+COPY --from=build-golang /tmp/peerswap/peerswap /usr/bin/peerswap
+
 
 COPY tools/docker-entrypoint.sh entrypoint.sh
 
