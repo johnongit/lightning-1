@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Plugin to be used to test miscellaneous notifications.
-
-Only used for 'channel_opened' for now.
 """
 
-from pyln.client import Plugin
+from pyln.client import Plugin, RpcError
+from time import sleep
+import sys
+import pytest
 
 plugin = Plugin()
 
@@ -25,6 +26,30 @@ def channel_opened(plugin, channel_opened, **kwargs):
 @plugin.subscribe("channel_state_changed")
 def channel_state_changed(plugin, channel_state_changed, **kwargs):
     plugin.log("channel_state_changed {}".format(channel_state_changed))
+
+
+@plugin.subscribe("shutdown")
+def shutdown(plugin, **kwargs):
+    plugin.log("received shutdown notification")
+
+    # 'shutdown' notification can be called in two ways, from `plugin stop` or from
+    # lightningd's shutdown loop, we test which one by making `getinfo` call
+    try:
+        plugin.rpc.getinfo()
+        plugin.rpc.datastore(key='test', string='Allowed', mode="create-or-append")
+        plugin.log("datastore success")
+    except RpcError as e:
+        if e.error == {'code': -5, 'message': 'lightningd is shutting down'}:
+            # JSON RPC is disabled by now, but can do logging
+            with pytest.raises(RpcError, match=r'-5.*lightningd is shutting down'):
+                plugin.rpc.datastore(key='test', string='Not allowed', mode="create-or-append")
+            plugin.log("datastore failed")
+        else:
+            raise
+
+    plugin.log("delaying shutdown with 5s")
+    sleep(5)
+    sys.exit(0)
 
 
 plugin.run()

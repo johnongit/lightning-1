@@ -793,12 +793,14 @@ here, with the peer's signatures attached.
 
 ### `shutdown`
 
-Called when lightningd is shutting down, or this plugin has been
-shutdown by the plugin stop command.  The plugin has 30 seconds to
-exit itself, otherwise it's killed.
+Send in two situations: lightningd is (almost completely) shutdown, or the plugin
+`stop` command has been called for this plugin. In both cases the plugin has 30
+seconds to exit itself, otherwise it's killed.
 
-Because lightningd can crash or be killed, a plugin cannot rely on
-this function always called.
+In the shutdown case, plugins should not interact with lightnind except via (id-less)
+logging or notifications. New rpc calls will fail with error code -5 and (plugin's)
+responses will be ignored. Because lightningd can crash or be killed, a plugin cannot
+rely on the shutdown notification always been send.
 
 
 ## Hooks
@@ -939,7 +941,11 @@ hook subscribers would not get called.
 
 ### `db_write`
 
-This hook is called whenever a change is about to be committed to the database.
+This hook is called whenever a change is about to be committed to the database,
+if you are using a SQLITE3 database (the default).
+This hook will be useless (the `"writes"` field will always be empty) if you are
+using a PostgreSQL database.
+
 It is currently extremely restricted:
 
 1. a plugin registering for this hook should not perform anything that may cause
@@ -1508,13 +1514,12 @@ type prefix, since c-lightning does not know how to parse the message.
 Because this is a chained hook, the daemon expects the result to be
 `{'result': 'continue'}`. It will fail if something else is returned.
 
-### `onion_message`, `onion_message_blinded` and `onion_message_ourpath`
+### `onion_message_blinded` and `onion_message_ourpath`
 
 **(WARNING: experimental-offers only)**
 
-These three hooks are almost identical, in that they are called when
-an onion message is received.  The `onion_message` hook is only used
-for obsolete unblinded messages, and can be ignored for modern usage.
+These two hooks are almost identical, in that they are called when
+an onion message is received.
 
 `onion_message_blinded` is used for unsolicited messages (where the
 source knows that it is sending to this node), and
@@ -1537,7 +1542,7 @@ The payload for a call follows this format:
         "reply_first_node": "02df5ffe895c778e10f7742a6c5b8a0cefbe9465df58b92fadeb883752c8107c8f",
         "reply_blinding": "02df5ffe895c778e10f7742a6c5b8a0cefbe9465df58b92fadeb883752c8107c8f",
 		"reply_path": [ {"id": "02df5ffe895c778e10f7742a6c5b8a0cefbe9465df58b92fadeb883752c8107c8f",
-                         "enctlv": "0a020d0d",
+                         "encrypted_recipient_data": "0a020d0d",
                          "blinding": "02df5ffe895c778e10f7742a6c5b8a0cefbe9465df58b92fadeb883752c8107c8f"} ],
         "invoice_request": "0a020d0d",
 		"invoice": "0a020d0d",
@@ -1550,6 +1555,7 @@ The payload for a call follows this format:
 All fields shown here are optional.
 
 We suggest just returning `{'result': 'continue'}`; any other result
+Signed-off-by: Rusty Russell <rusty@rustcorp.com.au>
 will cause the message not to be handed to any other hooks.
 
 ## Bitcoin backend

@@ -42,7 +42,7 @@ If **type** is "bolt12 offer", and **valid** is *true*:
     - **blinding** (pubkey): blinding factor for this path
     - **path** (array of objects): an individual path:
       - **node_id** (pubkey): node_id of the hop
-      - **enctlv** (hex): encrypted TLV entry for this hop
+      - **encrypted_recipient_data** (hex): encrypted TLV entry for this hop
   - **quantity_min** (u64, optional): the minimum quantity
   - **quantity_max** (u64, optional): the maximum quantity
   - **recurrence** (object, optional): how often to this offer should be used:
@@ -82,7 +82,7 @@ If **type** is "bolt12 invoice", and **valid** is *true*:
     - **blinding** (pubkey): blinding factor for this path
     - **path** (array of objects): an individual path:
       - **node_id** (pubkey): node_id of the hop
-      - **enctlv** (hex): encrypted TLV entry for this hop
+      - **encrypted_recipient_data** (hex): encrypted TLV entry for this hop
   - **quantity** (u64, optional): the quantity ordered
   - **recurrence_counter** (u32, optional): the 0-based counter for a recurring payment
   - **recurrence_start** (u32, optional): the optional start period for a recurring payment
@@ -180,4 +180,4 @@ RESOURCES
 
 Main web site: <https://github.com/ElementsProject/lightning>
 
-[comment]: # ( SHA256STAMP:7ddb369a73cb0bf8782e2176d0726e13015d9099f71a5ceda39d3e1cb7cd2241)
+[comment]: # ( SHA256STAMP:d05b5fc1bf230b3bbd03e2023fb0c6bbefb700f7c3cfb43512da48dbce45f005)

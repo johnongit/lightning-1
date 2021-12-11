@@ -1,3 +1,4 @@
+#include "config.h"
 #include <ccan/mem/mem.h>
 #include <ccan/tal/str/str.h>
 #include <common/bolt12_merkle.h>
@@ -10,9 +11,8 @@
 struct inv {
 	struct tlv_invoice *inv;
 
-	const char *buf;
 	/* May be NULL */
-	const jsmntok_t *replytok;
+	struct tlv_obs2_onionmsg_payload_reply_path *obs2_reply_path;
 	struct tlv_onionmsg_payload_reply_path *reply_path;
 
 	/* The offer, once we've looked it up. */
@@ -41,7 +41,7 @@ fail_inv_level(struct command *cmd,
 	plugin_log(cmd->plugin, l, "%s", msg);
 
 	/* Only reply if they gave us a path */
-	if (!inv->replytok && !inv->reply_path)
+	if (!inv->reply_path && !inv->obs2_reply_path)
 		return command_hook_success(cmd);
 
 	/* Don't send back internal error details. */
@@ -55,7 +55,7 @@ fail_inv_level(struct command *cmd,
 
 	errdata = tal_arr(cmd, u8, 0);
 	towire_invoice_error(&errdata, err);
-	return send_onion_reply(cmd, inv->reply_path, inv->buf, inv->replytok,
+	return send_onion_reply(cmd, inv->reply_path, inv->obs2_reply_path,
 				"invoice_error", errdata);
 }
 
@@ -315,12 +315,10 @@ static struct command_result *listoffers_error(struct command *cmd,
 }
 
 struct command_result *handle_invoice(struct command *cmd,
-				      const char *buf,
-				      const jsmntok_t *invtok,
-				      const jsmntok_t *replytok,
-				      struct tlv_onionmsg_payload_reply_path *reply_path)
+				      const u8 *invbin,
+				      struct tlv_onionmsg_payload_reply_path *reply_path STEALS,
+				      struct tlv_obs2_onionmsg_payload_reply_path *obs2_reply_path STEALS)
 {
-	const u8 *invbin = json_tok_bin_from_hex(cmd, buf, invtok);
 	size_t len = tal_count(invbin);
 	struct inv *inv = tal(cmd, struct inv);
 	struct out_req *req;
@@ -328,17 +326,8 @@ struct command_result *handle_invoice(struct command *cmd,
 	int bad_feature;
 	struct sha256 m, shash;
 
-	if (reply_path) {
-		inv->buf = NULL;
-		inv->replytok = NULL;
-		inv->reply_path = reply_path;
-	} else {
-		/* Make a copy of entire buffer, for later. */
-		inv->buf = tal_dup_arr(inv, char, buf, replytok->end, 0);
-		inv->replytok = tal_dup_arr(inv, jsmntok_t, replytok,
-					    json_next(replytok) - replytok, 0);
-		inv->reply_path = NULL;
-	}
+	inv->obs2_reply_path = tal_steal(inv, obs2_reply_path);
+	inv->reply_path = tal_steal(inv, reply_path);
 
 	inv->inv = tlv_invoice_new(cmd);
 	if (!fromwire_invoice(&invbin, &len, inv->inv)) {
@@ -366,12 +355,14 @@ struct command_result *handle_invoice(struct command *cmd,
 	 *
 	 * The reader of an invoice_request:
 	 *...
-	 *   - MUST fail the request if `chains` does not include (or imply) a
-	 *     supported chain.
+	 *   - if `chain` is not present:
+	 *     - MUST fail the request if bitcoin is not a supported chain.
+	 *   - otherwise:
+	 *     - MUST fail the request if `chain` is not a supported chain.
 	 */
-	if (!bolt12_chain_matches(inv->inv->chain, chainparams, inv->inv->chains)) {
+	if (!bolt12_chain_matches(inv->inv->chain, chainparams)) {
 		return fail_inv(cmd, inv,
-				"Wrong chains %s",
+				"Wrong chain %s",
 				tal_hex(tmpctx, inv->inv->chain));
 	}
 

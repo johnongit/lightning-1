@@ -1,3 +1,4 @@
+#include "config.h"
 #include <bitcoin/chainparams.h>
 #include <ccan/array_size/array_size.h>
 #include <ccan/cast/cast.h>
@@ -28,9 +29,7 @@ static LIST_HEAD(sent_list);
 struct sent {
 	/* We're in sent_invreqs, awaiting reply. */
 	struct list_node list;
-	/* The blinding factor used by reply (obsolete only) */
-	struct pubkey *reply_blinding;
-	/* The alias used by reply (modern only) */
+	/* The alias used by reply */
 	struct pubkey *reply_alias;
 	/* The command which sent us. */
 	struct command *cmd;
@@ -48,17 +47,6 @@ struct sent {
 	/* How long to wait for response before giving up. */
 	u32 wait_timeout;
 };
-
-static struct sent *find_sent_by_blinding(const struct pubkey *blinding)
-{
-	struct sent *i;
-
-	list_for_each(&sent_list, i, list) {
-		if (i->reply_blinding && pubkey_eq(i->reply_blinding, blinding))
-			return i;
-	}
-	return NULL;
-}
 
 static struct sent *find_sent_by_alias(const struct pubkey *alias)
 {
@@ -256,6 +244,15 @@ static struct command_result *handle_invreq_response(struct command *cmd,
 	 *   - MUST reject the invoice unless the following fields are equal or
 	 *     unset exactly as they are in the `invoice_request:`
 	 *     - `quantity`
+	 *     - `payer_key`
+	 *     - `payer_info`
+	 */
+	/* BOLT-offers-recurrence #12:
+	 * - if the invoice is a reply to an `invoice_request`:
+	 *...
+	 *   - MUST reject the invoice unless the following fields are equal or
+	 *     unset exactly as they are in the `invoice_request:`
+	 *     - `quantity`
 	 *     - `recurrence_counter`
 	 *     - `recurrence_start`
 	 *     - `payer_key`
@@ -292,7 +289,7 @@ static struct command_result *handle_invreq_response(struct command *cmd,
 	} else
 		expected_amount = NULL;
 
-	/* BOLT-offers #12:
+	/* BOLT-offers-recurrence #12:
 	 * - if the offer contained `recurrence`:
 	 *   - MUST reject the invoice if `recurrence_basetime` is not set.
 	 */
@@ -430,48 +427,6 @@ static struct command_result *recv_modern_onion_message(struct command *cmd,
 	}
 
 	plugin_log(cmd->plugin, LOG_DBG, "Received modern onion message: %.*s",
-		   json_tok_full_len(params),
-		   json_tok_full(buf, params));
-
-	err = handle_error(cmd, sent, buf, om);
-	if (err)
-		return err;
-
-	if (sent->invreq)
-		return handle_invreq_response(cmd, sent, buf, om);
-
-	return command_hook_success(cmd);
-}
-
-static struct command_result *recv_obs_onion_message(struct command *cmd,
-						     const char *buf,
-						     const jsmntok_t *params)
-{
-	const jsmntok_t *om, *blindingtok;
-	bool obsolete;
-	struct sent *sent;
-	struct pubkey blinding;
-	struct command_result *err;
-
-	om = json_get_member(buf, params, "onion_message");
-	json_to_bool(buf, json_get_member(buf, om, "obsolete"), &obsolete);
-	if (!obsolete)
-		return command_hook_success(cmd);
-
-	blindingtok = json_get_member(buf, om, "blinding_in");
-	if (!blindingtok || !json_to_pubkey(buf, blindingtok, &blinding))
-		return command_hook_success(cmd);
-
-	sent = find_sent_by_blinding(&blinding);
-	if (!sent) {
-		plugin_log(cmd->plugin, LOG_DBG,
-			   "No match for obsolete onion %.*s",
-			   json_tok_full_len(om),
-			   json_tok_full(buf, om));
-		return command_hook_success(cmd);
-	}
-
-	plugin_log(cmd->plugin, LOG_DBG, "Received onion message: %.*s",
 		   json_tok_full_len(params),
 		   json_tok_full(buf, params));
 
@@ -681,71 +636,96 @@ static struct pubkey *path_to_node(const tal_t *ctx,
 	return nodes;
 }
 
-/* Marshal arguments for sending obsolete and modern onion messages */
+/* Marshal arguments for sending onion messages */
 struct sending {
 	struct sent *sent;
 	const char *msgfield;
 	const u8 *msgval;
+	struct tlv_obs2_onionmsg_payload_reply_path *obs2_reply_path;
 	struct command_result *(*done)(struct command *cmd,
 				       const char *buf UNUSED,
 				       const jsmntok_t *result UNUSED,
 				       struct sent *sent);
 };
 
-/* Send this message down this path, with blinded reply path */
-static struct command_result *send_obs_message(struct command *cmd,
-					       const char *buf UNUSED,
-					       const jsmntok_t *result UNUSED,
-					       struct sending *sending)
+static struct command_result *
+send_obs2_message(struct command *cmd,
+		  const char *buf,
+		  const jsmntok_t *result,
+		  struct sending *sending)
 {
-	struct pubkey *backwards;
-	struct onionmsg_path **path;
-	struct pubkey blinding;
-	struct out_req *req;
 	struct sent *sent = sending->sent;
+	struct privkey blinding_iter;
+	struct pubkey fwd_blinding, *node_alias;
+	size_t nhops = tal_count(sent->path);
+	struct tlv_obs2_onionmsg_payload **payloads;
+	struct out_req *req;
 
-	/* FIXME: Maybe we should allow this? */
-	if (tal_count(sent->path) == 1)
-		return command_fail(cmd, PAY_ROUTE_NOT_FOUND,
-				    "Refusing to talk to ourselves");
+	/* Now create enctlvs for *forward* path. */
+	randombytes_buf(&blinding_iter, sizeof(blinding_iter));
+	if (!pubkey_from_privkey(&blinding_iter, &fwd_blinding))
+		return command_fail(cmd, LIGHTNINGD,
+				    "Could not convert blinding %s to pubkey!",
+				    type_to_string(tmpctx, struct privkey,
+						   &blinding_iter));
 
-	/* Reverse path is offset by one. */
-	backwards = tal_arr(tmpctx, struct pubkey, tal_count(sent->path) - 1);
-	for (size_t i = 0; i < tal_count(backwards); i++)
-		backwards[tal_count(backwards)-1-i] = sent->path[i];
+	/* We overallocate: this node (0) doesn't have payload or alias */
+	payloads = tal_arr(cmd, struct tlv_obs2_onionmsg_payload *, nhops);
+	node_alias = tal_arr(cmd, struct pubkey, nhops);
 
-	/* Ok, now make reply for onion_message */
-	sent->reply_blinding = tal(sent, struct pubkey);
-	path = make_blindedpath(tmpctx, backwards, &blinding,
-				sent->reply_blinding);
+	for (size_t i = 1; i < nhops - 1; i++) {
+		payloads[i] = tlv_obs2_onionmsg_payload_new(payloads);
+		payloads[i]->enctlv = create_obs2_enctlv(payloads[i],
+							 &blinding_iter,
+							 &sent->path[i],
+							 &sent->path[i+1],
+							 /* FIXME: Pad? */
+							 0,
+							 NULL,
+							 &blinding_iter,
+							 &node_alias[i]);
+	}
+	/* Final payload contains the actual data. */
+	payloads[nhops-1] = tlv_obs2_onionmsg_payload_new(payloads);
 
-	req = jsonrpc_request_start(cmd->plugin, cmd, "sendobsonionmessage",
+	/* We don't include enctlv in final, but it gives us final alias */
+	if (!create_obs2_final_enctlv(tmpctx, &blinding_iter, &sent->path[nhops-1],
+				      /* FIXME: Pad? */ 0,
+				      NULL,
+				      &node_alias[nhops-1])) {
+		/* Should not happen! */
+		return command_fail(cmd, LIGHTNINGD,
+				    "Could create final enctlv");
+	}
+
+	/* FIXME: This interface is a string for sendobsonionmessage! */
+	if (streq(sending->msgfield, "invoice_request")) {
+		payloads[nhops-1]->invoice_request
+			= cast_const(u8 *, sending->msgval);
+	} else {
+		assert(streq(sending->msgfield, "invoice"));
+		payloads[nhops-1]->invoice
+			= cast_const(u8 *, sending->msgval);
+	}
+	payloads[nhops-1]->reply_path = sending->obs2_reply_path;
+
+	req = jsonrpc_request_start(cmd->plugin, cmd, "sendobs2onionmessage",
 				    sending->done,
 				    forward_error,
-				    sent);
+				    sending->sent);
+	json_add_pubkey(req->js, "first_id", &sent->path[1]);
+	json_add_pubkey(req->js, "blinding", &fwd_blinding);
 	json_array_start(req->js, "hops");
-	for (size_t i = 1; i < tal_count(sent->path); i++) {
+	for (size_t i = 1; i < nhops; i++) {
+		u8 *tlv;
 		json_object_start(req->js, NULL);
-		json_add_pubkey(req->js, "id", &sent->path[i]);
-		if (i == tal_count(sent->path) - 1)
-			json_add_hex_talarr(req->js,
-					    sending->msgfield, sending->msgval);
+		json_add_pubkey(req->js, "id", &node_alias[i]);
+		tlv = tal_arr(tmpctx, u8, 0);
+		towire_obs2_onionmsg_payload(&tlv, payloads[i]);
+		json_add_hex_talarr(req->js, "tlv", tlv);
 		json_object_end(req->js);
 	}
 	json_array_end(req->js);
-
-	json_object_start(req->js, "reply_path");
-	json_add_pubkey(req->js, "blinding", &blinding);
-	json_array_start(req->js, "path");
-	for (size_t i = 0; i < tal_count(path); i++) {
-		json_object_start(req->js, NULL);
-		json_add_pubkey(req->js, "id", &path[i]->node_id);
-		if (path[i]->enctlv)
-			json_add_hex_talarr(req->js, "enctlv", path[i]->enctlv);
-		json_object_end(req->js);
-	}
-	json_array_end(req->js);
-	json_object_end(req->js);
 	return send_outreq(cmd->plugin, req);
 }
 
@@ -775,7 +755,7 @@ send_modern_message(struct command *cmd,
 
 	for (size_t i = 1; i < nhops - 1; i++) {
 		payloads[i] = tlv_onionmsg_payload_new(payloads);
-		payloads[i]->enctlv = create_enctlv(payloads[i],
+		payloads[i]->encrypted_data_tlv = create_enctlv(payloads[i],
 						    &blinding_iter,
 						    &sent->path[i],
 						    &sent->path[i+1],
@@ -810,8 +790,8 @@ send_modern_message(struct command *cmd,
 	payloads[nhops-1]->reply_path = reply_path;
 
 	req = jsonrpc_request_start(cmd->plugin, cmd, "sendonionmessage",
-				    /* We try obsolete msg next */
-				    send_obs_message,
+				    /* Try sending older version next */
+				    send_obs2_message,
 				    forward_error,
 				    sending);
 	json_add_pubkey(req->js, "first_id", &sent->path[1]);
@@ -844,6 +824,15 @@ static struct command_result *use_reply_path(struct command *cmd,
 	if (!rpath)
 		plugin_err(cmd->plugin,
 			   "could not parse reply path %.*s?",
+			   json_tok_full_len(result),
+			   json_tok_full(buf, result));
+
+	sending->obs2_reply_path = json_to_obs2_reply_path(cmd, buf,
+							   json_get_member(buf, result,
+									   "obs2blindedpath"));
+	if (!sending->obs2_reply_path)
+		plugin_err(cmd->plugin,
+			   "could not parse obs2 reply path %.*s?",
 			   json_tok_full_len(result),
 			   json_tok_full(buf, result));
 
@@ -1101,7 +1090,7 @@ static struct command_result *invreq_done(struct command *cmd,
 		if (sent->invreq->recurrence_start)
 			period_idx += *sent->invreq->recurrence_start;
 
-		/* BOLT-offers #12:
+		/* BOLT-offers-recurrence #12:
 		 * - if the offer contained `recurrence_limit`:
 		 *   - MUST NOT send an `invoice_request` for a period greater
 		 *     than `max_period`
@@ -1114,7 +1103,7 @@ static struct command_result *invreq_done(struct command *cmd,
 					    period_idx,
 					    *sent->offer->recurrence_limit);
 
-		/* BOLT-offers #12:
+		/* BOLT-offers-recurrence #12:
 		 * - SHOULD NOT send an `invoice_request` for a period which has
 		 *   already passed.
 		 */
@@ -1278,11 +1267,11 @@ static struct command_result *json_fetchinvoice(struct command *cmd,
 	    && time_now().ts.tv_sec > *sent->offer->absolute_expiry)
 		return command_fail(cmd, OFFER_EXPIRED, "Offer expired");
 
-	/* BOLT-offers #12:
+	/* BOLT-offers-recurrence #12:
 	 * - if the offer did not specify `amount`:
 	 *   - MUST specify `amount`.`msat` in multiples of the minimum
-	 *     lightning-payable unit (e.g. milli-satoshis for bitcoin) for the
-	 *     first `chains` entry.
+	 *     lightning-payable unit (e.g. milli-satoshis for bitcoin) for
+	 *     `chain` (or for bitcoin, if there is no `chain`).
 	 * - otherwise:
 	 *   - MAY omit `amount`.
 	 *     - if it sets `amount`:
@@ -1330,16 +1319,16 @@ static struct command_result *json_fetchinvoice(struct command *cmd,
 					    "quantity parameter unnecessary");
 	}
 
-	/* BOLT-offers #12:
+	/* BOLT-offers-recurrence #12:
 	 * - if the offer contained `recurrence`:
 	 */
 	if (sent->offer->recurrence) {
-		/* BOLT-offers #12:
+		/* BOLT-offers-recurrence #12:
 		 *    - for the initial request:
 		 *...
 		 *      - MUST set `recurrence_counter` `counter` to 0.
 		 */
-		/* BOLT-offers #12:
+		/* BOLT-offers-recurrence #12:
 		 *    - for any successive requests:
 		 *...
 		 *      - MUST set `recurrence_counter` `counter` to one greater
@@ -1349,7 +1338,7 @@ static struct command_result *json_fetchinvoice(struct command *cmd,
 			return command_fail(cmd, JSONRPC2_INVALID_PARAMS,
 					    "needs recurrence_counter");
 
-		/* BOLT-offers #12:
+		/* BOLT-offers-recurrence #12:
 		 *    - if the offer contained `recurrence_base` with
 		 *      `start_any_period` non-zero:
 		 *      - MUST include `recurrence_start`
@@ -1374,7 +1363,7 @@ static struct command_result *json_fetchinvoice(struct command *cmd,
 			return command_fail(cmd, JSONRPC2_INVALID_PARAMS,
 					    "needs recurrence_label");
 	} else {
-		/* BOLT-offers #12:
+		/* BOLT-offers-recurrence #12:
 		 * - otherwise:
 		 *   - MUST NOT set `recurrence_counter`.
 		 *   - MUST NOT set `recurrence_start`
@@ -1395,10 +1384,6 @@ static struct command_result *json_fetchinvoice(struct command *cmd,
 	 *   - the bitcoin chain is implied as the first and only entry.
 	 */
 	if (!streq(chainparams->network_name, "bitcoin")) {
-		if (deprecated_apis) {
-			invreq->chains = tal_arr(invreq, struct bitcoin_blkid, 1);
-			invreq->chains[0] = chainparams->genesis_blockhash;
-		}
 		invreq->chain = tal_dup(invreq, struct bitcoin_blkid,
 					&chainparams->genesis_blockhash);
 	}
@@ -1779,9 +1764,7 @@ static struct command_result *json_sendinvoice(struct command *cmd,
 	 */
 	sent->inv->payer_key = sent->offer->node_id;
 
-	/* BOLT-offers #12:
-	 *     - FIXME: recurrence!
-	 */
+	/* FIXME: recurrence? */
 	if (sent->offer->recurrence)
 		return command_fail(cmd, JSONRPC2_INVALID_PARAMS,
 				    "FIXME: handle recurring send_invoice offer!");
@@ -1794,10 +1777,6 @@ static struct command_result *json_sendinvoice(struct command *cmd,
 	 *   - the bitcoin chain is implied as the first and only entry.
 	 */
 	if (!streq(chainparams->network_name, "bitcoin")) {
-		if (deprecated_apis) {
-			sent->inv->chains = tal_arr(sent->inv, struct bitcoin_blkid, 1);
-			sent->inv->chains[0] = chainparams->genesis_blockhash;
-		}
 		sent->inv->chain = tal_dup(sent->inv, struct bitcoin_blkid,
 					   &chainparams->genesis_blockhash);
 	}
@@ -1942,10 +1921,6 @@ static const char *init(struct plugin *p, const char *buf UNUSED,
 }
 
 static const struct plugin_hook hooks[] = {
-	{
-		"onion_message_blinded",
-		recv_obs_onion_message
-	},
 	{
 		"onion_message_ourpath",
 		recv_modern_onion_message

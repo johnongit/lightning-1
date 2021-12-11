@@ -7,9 +7,12 @@
  * up to lightningd which will fire up a specific per-peer daemon to talk to
  * it.
  */
+#include "config.h"
 #include <ccan/array_size/array_size.h>
 #include <ccan/asort/asort.h>
+#include <ccan/crypto/siphash24/siphash24.h>
 #include <ccan/fdpass/fdpass.h>
+#include <ccan/htable/htable_type.h>
 #include <ccan/noerr/noerr.h>
 #include <ccan/tal/str/str.h>
 #include <common/bech32.h>
@@ -874,7 +877,10 @@ static struct io_plan *conn_init(struct io_conn *conn,
 			      "Can't connect to forproxy address");
 		break;
 	case ADDR_INTERNAL_WIREADDR:
+		/* DNS should have been resolved before */
+		assert(addr->u.wireaddr.type != ADDR_TYPE_DNS);
 		/* If it was a Tor address, we wouldn't be here. */
+		assert(!is_toraddr((char*)addr->u.wireaddr.addr));
 		ai = wireaddr_to_addrinfo(tmpctx, &addr->u.wireaddr);
 		break;
 	}
@@ -925,6 +931,14 @@ static void try_connect_one_addr(struct connecting *connect)
 	bool use_proxy = connect->daemon->always_use_proxy;
 	const struct wireaddr_internal *addr = &connect->addrs[connect->addrnum];
 	struct io_conn *conn;
+#if EXPERIMENTAL_FEATURES /* BOLT7 DNS RFC #911 */
+	bool use_dns = connect->daemon->use_dns;
+	struct addrinfo hints, *ais, *aii;
+	struct wireaddr_internal addrhint;
+	int gai_err;
+	struct sockaddr_in *sa4;
+	struct sockaddr_in6 *sa6;
+#endif
 
 	/* In case we fail without a connection, make destroy_io_conn happy */
 	connect->conn = NULL;
@@ -934,7 +948,8 @@ static void try_connect_one_addr(struct connecting *connect)
 		connect_failed(connect->daemon, &connect->id,
 			       connect->seconds_waited,
 			       connect->addrhint, CONNECT_ALL_ADDRESSES_FAILED,
-			       "%s", connect->errors);
+			       "All addresses failed: %s",
+			       connect->errors);
 		tal_free(connect);
 		return;
 	}
@@ -974,6 +989,66 @@ static void try_connect_one_addr(struct connecting *connect)
 		case ADDR_TYPE_IPV6:
 			af = AF_INET6;
 			break;
+		case ADDR_TYPE_DNS:
+#if EXPERIMENTAL_FEATURES /* BOLT7 DNS RFC #911 */
+			if (use_proxy) /* hand it to the proxy */
+				break;
+			if (!use_dns) {  /* ignore DNS when we can't use it */
+				tal_append_fmt(&connect->errors,
+					       "%s: dns disabled. ",
+					       type_to_string(tmpctx,
+							      struct wireaddr_internal,
+							      addr));
+				goto next;
+			}
+			/* Resolve with getaddrinfo */
+			memset(&hints, 0, sizeof(hints));
+			hints.ai_socktype = SOCK_STREAM;
+			hints.ai_family = AF_UNSPEC;
+			hints.ai_protocol = 0;
+			hints.ai_flags = AI_ADDRCONFIG;
+			gai_err = getaddrinfo((char *)addr->u.wireaddr.addr,
+					      tal_fmt(tmpctx, "%d",
+						      addr->u.wireaddr.port),
+					      &hints, &ais);
+			if (gai_err != 0) {
+				tal_append_fmt(&connect->errors,
+					       "%s: getaddrinfo error '%s'. ",
+					       type_to_string(tmpctx,
+							      struct wireaddr_internal,
+							      addr),
+					       gai_strerror(gai_err));
+				goto next;
+			}
+			/* create new addrhints on-the-fly per result ... */
+			for (aii = ais; aii; aii = aii->ai_next) {
+				addrhint.itype = ADDR_INTERNAL_WIREADDR;
+				if (aii->ai_family == AF_INET) {
+					sa4 = (struct sockaddr_in *) aii->ai_addr;
+					wireaddr_from_ipv4(&addrhint.u.wireaddr,
+							   &sa4->sin_addr,
+							   addr->u.wireaddr.port);
+				} else if (aii->ai_family == AF_INET6) {
+					sa6 = (struct sockaddr_in6 *) aii->ai_addr;
+					wireaddr_from_ipv6(&addrhint.u.wireaddr,
+							   &sa6->sin6_addr,
+							   addr->u.wireaddr.port);
+				} else {
+					/* skip unsupported ai_family */
+					continue;
+				}
+				tal_arr_expand(&connect->addrs, addrhint);
+				/* don't forget to update convenience pointer */
+				addr = &connect->addrs[connect->addrnum];
+			}
+			freeaddrinfo(ais);
+#endif
+			tal_append_fmt(&connect->errors,
+				       "%s: EXPERIMENTAL_FEATURES needed. ",
+				       type_to_string(tmpctx,
+						      struct wireaddr_internal,
+						      addr));
+			goto next;
 		case ADDR_TYPE_WEBSOCKET:
 			af = -1;
 			break;
@@ -1158,6 +1233,7 @@ static bool handle_wireaddr_listen(struct daemon *daemon,
 	case ADDR_TYPE_WEBSOCKET:
 	case ADDR_TYPE_TOR_V2_REMOVED:
 	case ADDR_TYPE_TOR_V3:
+	case ADDR_TYPE_DNS:
 		break;
 	}
 	status_failed(STATUS_FAIL_INTERNAL_ERROR,
@@ -1356,17 +1432,20 @@ static struct wireaddr_internal *setup_listeners(const tal_t *ctx,
 			/* Override with websocket port */
 			addr = binding[i].u.wireaddr;
 			addr.port = daemon->websocket_port;
-			handle_wireaddr_listen(daemon, &addr, false, true);
-			announced_some = true;
+			if (handle_wireaddr_listen(daemon, &addr, true, true))
+				announced_some = true;
 			/* FIXME: We don't report these bindings to
 			 * lightningd, so they don't appear in
 			 * getinfo. */
 		}
 
-
-		/* We add the websocket port to the announcement if it
-		 * applies to any */
-		if (announced_some) {
+		/* We add the websocket port to the announcement if we made one
+		 * *and* we have other announced addresses. */
+		/* BOLT-websocket #7:
+		 *   - MUST NOT add a `type 6` address unless there is also at
+		 *     least one address of different type.
+		 */
+		if (announced_some && tal_count(*announcable) != 0) {
 			wireaddr_from_websocket(&addr, daemon->websocket_port);
 			add_announcable(announcable, &addr);
 		}
@@ -1613,6 +1692,10 @@ static void add_seed_addrs(struct wireaddr_internal **addrs,
 		                                   NULL, broken_reply, NULL);
 		if (new_addrs) {
 			for (size_t j = 0; j < tal_count(new_addrs); j++) {
+#if EXPERIMENTAL_FEATURES /* BOLT7 DNS RFC #911 */
+				if (new_addrs[j].type == ADDR_TYPE_DNS)
+					continue;
+#endif
 				struct wireaddr_internal a;
 				a.itype = ADDR_INTERNAL_WIREADDR;
 				a.u.wireaddr = new_addrs[j];

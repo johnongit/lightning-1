@@ -1,4 +1,5 @@
 /* Simple tool to route gossip from a peer. */
+#include "config.h"
 #include <bitcoin/block.h>
 #include <bitcoin/chainparams.h>
 #include <ccan/array_size/array_size.h>
@@ -323,6 +324,9 @@ int main(int argc, char *argv[])
 			break;
 		case ADDR_TYPE_WEBSOCKET:
 			opt_usage_exit_fail("Don't support websockets");
+			break;
+		case ADDR_TYPE_DNS:
+			opt_usage_exit_fail("Don't support DNS");
 			break;
 		case ADDR_TYPE_IPV4:
 			af = AF_INET;

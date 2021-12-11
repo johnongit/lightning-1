@@ -99,14 +99,9 @@ bool bolt12_check_signature(const struct tlv_field *fields,
 			    const struct point32 *key,
 			    const struct bip340sig *sig);
 
-/* Given a tal_arr of chains, does it contain this chain? */
-bool bolt12_chains_match(const struct bitcoin_blkid *chains,
-			 const struct chainparams *must_be_chain);
-
 /* Given a single bolt12 chain, does it match?  (NULL == bitcoin) */
 bool bolt12_chain_matches(const struct bitcoin_blkid *chain,
-			  const struct chainparams *must_be_chain,
-			  const struct bitcoin_blkid *deprecated_chains);
+			  const struct chainparams *must_be_chain);
 
 /* Given a basetime, when does period N start? */
 u64 offer_period_start(u64 basetime, size_t n,
@@ -119,21 +114,6 @@ void offer_period_paywindow(const struct tlv_offer_recurrence *recurrence,
 			    u64 basetime, u64 period_idx,
 			    u64 *period_start, u64 *period_end);
 
-
-/**
- * Preliminary prefix check to see if the string might be a bolt12 invoice.
- */
-bool bolt12_has_invoice_prefix(const char *str);
-
-/**
- * Preliminary prefix check to see if the string might be a bolt12 request.
- */
-bool bolt12_has_request_prefix(const char *str);
-
-/**
- * Preliminary prefix check to see if the string might be a bolt12 offer.
- */
-bool bolt12_has_offer_prefix(const char *str);
 
 /**
  * Preliminary prefix check to see if the string might be a bolt12 string.

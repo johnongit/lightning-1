@@ -1,3 +1,4 @@
+#include "config.h"
 #include <ccan/array_size/array_size.h>
 #include <ccan/time/time.h>
 #include <common/daemon.h>
@@ -193,7 +194,7 @@ struct chain_coin_mvt *new_coin_withdrawal_sat(const tal_t *ctx UNNEEDED,
 					       struct amount_sat amount UNNEEDED)
 { fprintf(stderr, "new_coin_withdrawal_sat called!\n"); abort(); }
 /* Generated stub for notleak_ */
-void *notleak_(const void *ptr UNNEEDED, bool plus_children UNNEEDED)
+void *notleak_(void *ptr UNNEEDED, bool plus_children UNNEEDED)
 { fprintf(stderr, "notleak_ called!\n"); abort(); }
 /* Generated stub for peer_billboard */
 void peer_billboard(bool perm UNNEEDED, const char *fmt UNNEEDED, ...)

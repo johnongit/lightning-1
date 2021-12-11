@@ -1,3 +1,4 @@
+#include "config.h"
 #include <bitcoin/chainparams.h>
 #include <bitcoin/preimage.h>
 #include <ccan/tal/str/str.h>
@@ -15,11 +16,8 @@
 /* We need to keep the reply path around so we can reply with invoice */
 struct invreq {
 	struct tlv_invoice_request *invreq;
-	const char *buf;
-	/* If obsolete style */
-	const jsmntok_t *replytok;
-	/* If modern style. */
 	struct tlv_onionmsg_payload_reply_path *reply_path;
+	struct tlv_obs2_onionmsg_payload_reply_path *obs2_reply_path;
 
 	/* The offer, once we've looked it up. */
 	struct tlv_offer *offer;
@@ -63,8 +61,7 @@ fail_invreq_level(struct command *cmd,
 
 	errdata = tal_arr(cmd, u8, 0);
 	towire_invoice_error(&errdata, err);
-	return send_onion_reply(cmd, invreq->reply_path,
-				invreq->buf, invreq->replytok,
+	return send_onion_reply(cmd, invreq->reply_path, invreq->obs2_reply_path,
 				"invoice_error", errdata);
 }
 
@@ -113,7 +110,7 @@ test_field(struct command *cmd,
 	return NULL;
 }
 
-/* BOLT-offers #12:
+/* BOLT-offers-recurrence #12:
  * - if the invoice corresponds to an offer with `recurrence`:
  * ...
  *   - if it sets `relative_expiry`:
@@ -184,7 +181,7 @@ static struct command_result *createinvoice_done(struct command *cmd,
 					json_tok_full(buf, t));
 	}
 
-	return send_onion_reply(cmd, ir->reply_path, ir->buf, ir->replytok,
+	return send_onion_reply(cmd, ir->reply_path, ir->obs2_reply_path,
 				"invoice", rawinv);
 }
 
@@ -234,7 +231,7 @@ static struct command_result *check_period(struct command *cmd,
 	if (ir->offer->recurrence_base)
 		basetime = ir->offer->recurrence_base->basetime;
 
-	/* BOLT-offers #12:
+	/* BOLT-offers-recurrence #12:
 	 * - if the invoice corresponds to an offer with `recurrence`:
 	 *   - MUST set `recurrence_basetime` to the start of period #0 as
 	 *     calculated by [Period Calculation](#offer-period-calculation).
@@ -243,7 +240,7 @@ static struct command_result *check_period(struct command *cmd,
 
 	period_idx = *ir->invreq->recurrence_counter;
 
-	/* BOLT-offers #12:
+	/* BOLT-offers-recurrence #12:
 	 * - if the offer had `recurrence_base` and `start_any_period`
 	 *   was 1:
 	 *   - MUST fail the request if there is no `recurrence_start`
@@ -259,14 +256,14 @@ static struct command_result *check_period(struct command *cmd,
 			return err;
 		period_idx += *ir->invreq->recurrence_start;
 
-		/* BOLT-offers #12:
+		/* BOLT-offers-recurrence #12:
 		 * - MUST set (or not set) `recurrence_start` exactly as the
 		 *   invoice_request did.
 		 */
 		ir->inv->recurrence_start
 			= tal_dup(ir->inv, u32, ir->invreq->recurrence_start);
 	} else {
-		/* BOLT-offers #12:
+		/* BOLT-offers-recurrence #12:
 		 *
 		 * - otherwise:
 		 *   - MUST fail the request if there is a `recurrence_start`
@@ -279,7 +276,7 @@ static struct command_result *check_period(struct command *cmd,
 			return err;
 	}
 
-	/* BOLT-offers #12:
+	/* BOLT-offers-recurrence #12:
 	 * - if the offer has a `recurrence_limit`:
 	 *   - MUST fail the request if the period index is greater than
 	 *     `max_period`.
@@ -313,7 +310,7 @@ static struct command_result *check_period(struct command *cmd,
 
 	set_recurring_inv_expiry(ir->inv, paywindow_end);
 
-	/* BOLT-offers #12:
+	/* BOLT-offers-recurrence #12:
 	 *
 	 * - if `recurrence_counter` is non-zero:
 	 *...
@@ -479,7 +476,7 @@ static struct command_result *invreq_base_amount_simple(struct command *cmd,
 
 		*amt = amount_msat(raw_amount);
 	} else {
-		/* BOLT-offers #12:
+		/* BOLT-offers-recurrence #12:
 		 *
 		 * - otherwise:
 		 * - MUST fail the request if it does not contain `amount`.
@@ -538,7 +535,7 @@ static struct command_result *handle_amount_and_recurrence(struct command *cmd,
 	/* Last of all, we handle recurrence details, which often requires
 	 * further lookups. */
 
-	/* BOLT-offers #12:
+	/* BOLT-offers-recurrence #12:
 	 * - MUST set (or not set) `recurrence_counter` exactly as the
 	 *   invoice_request did.
 	 */
@@ -727,7 +724,7 @@ static struct command_result *listoffers_done(struct command *cmd,
 	}
 
 	if (ir->offer->recurrence) {
-		/* BOLT-offers #12:
+		/* BOLT-offers-recurrence #12:
 		 *
 		 * - if the offer had a `recurrence`:
 		 *   - MUST fail the request if there is no `recurrence_counter`
@@ -737,7 +734,7 @@ static struct command_result *listoffers_done(struct command *cmd,
 		if (err)
 			return err;
 	} else {
-		/* BOLT-offers #12:
+		/* BOLT-offers-recurrence #12:
 		 * - otherwise (the offer had no `recurrence`):
 		 *   - MUST fail the request if there is a `recurrence_counter`
 		 *     field.
@@ -758,10 +755,6 @@ static struct command_result *listoffers_done(struct command *cmd,
 	 *     - MUST specify `chains` the offer is valid for.
 	 */
 	if (!streq(chainparams->network_name, "bitcoin")) {
-		if (deprecated_apis) {
-			ir->inv->chains = tal_arr(ir->inv, struct bitcoin_blkid, 1);
-			ir->inv->chains[0] = chainparams->genesis_blockhash;
-		}
 		ir->inv->chain = tal_dup(ir->inv, struct bitcoin_blkid,
 					 &chainparams->genesis_blockhash);
 	}
@@ -836,28 +829,17 @@ static struct command_result *handle_offerless_request(struct command *cmd,
 }
 
 struct command_result *handle_invoice_request(struct command *cmd,
-					      const char *buf,
-					      const jsmntok_t *invreqtok,
-					      const jsmntok_t *replytok,
-					      struct tlv_onionmsg_payload_reply_path *reply_path)
+					      const u8 *invreqbin,
+					      struct tlv_onionmsg_payload_reply_path *reply_path,
+					      struct tlv_obs2_onionmsg_payload_reply_path *obs2_reply_path)
 {
-	const u8 *invreqbin = json_tok_bin_from_hex(cmd, buf, invreqtok);
 	size_t len = tal_count(invreqbin);
 	struct invreq *ir = tal(cmd, struct invreq);
 	struct out_req *req;
 	int bad_feature;
 
-	/* Make a copy of entire buffer, for later. */
-	if (reply_path) {
-		ir->buf = NULL;
-		ir->replytok = NULL;
-		ir->reply_path = reply_path;
-	} else {
-		ir->buf = tal_dup_arr(ir, char, buf, replytok->end, 0);
-		ir->replytok = tal_dup_arr(ir, jsmntok_t, replytok,
-					   json_next(replytok) - replytok, 0);
-		ir->reply_path = NULL;
-	}
+	ir->obs2_reply_path = tal_steal(ir, obs2_reply_path);
+	ir->reply_path = tal_steal(ir, reply_path);
 
 	ir->invreq = tlv_invoice_request_new(cmd);
 	if (!fromwire_invoice_request(&invreqbin, &len, ir->invreq)) {
@@ -885,11 +867,12 @@ struct command_result *handle_invoice_request(struct command *cmd,
 	 *
 	 * The reader of an invoice_request:
 	 *...
-	 *   - MUST fail the request if `chains` does not include (or imply) a
-	 *     supported chain.
+	 *  - if `chain` is not present:
+	 *    - MUST fail the request if bitcoin is not a supported chain.
+	 *  - otherwise:
+	 *    - MUST fail the request if `chain` is not a supported chain.
 	 */
-	if (!bolt12_chain_matches(ir->invreq->chain, chainparams,
-				  ir->invreq->chains)) {
+	if (!bolt12_chain_matches(ir->invreq->chain, chainparams)) {
 		return fail_invreq(cmd, ir,
 				   "Wrong chain %s",
 				   tal_hex(tmpctx, ir->invreq->chain));

@@ -1,5 +1,6 @@
 /* Without this, gheap is *really* slow!  Comment out for debugging. */
 #define NDEBUG
+#include "config.h"
 #include <ccan/cast/cast.h>
 #include <common/dijkstra.h>
 #include <common/gossmap.h>
@@ -32,12 +33,6 @@ static const struct gossmap *global_map;
 u32 dijkstra_distance(const struct dijkstra *dij, u32 node_idx)
 {
 	return dij[node_idx].distance;
-}
-
-/* Total CLTV delay */
-u32 dijkstra_delay(const struct dijkstra *dij, u32 node_idx)
-{
-	return dij[node_idx].total_delay;
 }
 
 struct gossmap_chan *dijkstra_best_chan(const struct dijkstra *dij,

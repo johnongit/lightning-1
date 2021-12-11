@@ -1,3 +1,4 @@
+#include "config.h"
 #include <bitcoin/chainparams.h>
 #include <ccan/err/err.h>
 #include <ccan/opt/opt.h>
@@ -174,8 +175,8 @@ static bool print_recurrance(const struct tlv_offer_recurrence *recurrence,
 	const char *unit;
 	bool ok = true;
 
-	/* BOLT-offers #12:
-	 * Thus, each payment has:
+	/* BOLT-offers-recurrence #12:
+	 * Thus, each offer containing a recurring payment has:
 	 * 1. A `time_unit` defining 0 (seconds), 1 (days), 2 (months),
 	 *    3 (years).
 	 * 2. A `period`, defining how often (in `time_unit`) it has to be paid.
@@ -270,7 +271,7 @@ static bool print_blindedpaths(struct blinded_path **paths,
 			printf(" %s:%s",
 			       type_to_string(tmpctx, struct pubkey,
 					      &p[j]->node_id),
-			       tal_hex(tmpctx, p[j]->enctlv));
+			       tal_hex(tmpctx, p[j]->encrypted_recipient_data));
 			if (blindedpay) {
 				if (bp_idx < tal_count(blindedpay))
 					printf("fee=%u/%u,cltv=%u,features=%s",

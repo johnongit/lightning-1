@@ -37,13 +37,18 @@ struct sockaddr_un;
  *             where `checksum = sha3(".onion checksum" | pubkey || version)[:2]`
  */
 
+/* BOLT-hostnames #7:
+ *   * `5`: DNS hostname; data = `[byte:len][len*byte:hostname][u16:port]` (length up to 258)
+ */
+
 /* BOLT-websockets #7:
  *    * `6`: WebSocket port; data = `[2:port]` (length 2)
  */
 
 #define	TOR_V2_ADDRLEN 10
 #define	TOR_V3_ADDRLEN 35
-#define	LARGEST_ADDRLEN TOR_V3_ADDRLEN
+#define	DNS_ADDRLEN 255
+#define	LARGEST_ADDRLEN DNS_ADDRLEN
 #define	TOR_V3_BLOBLEN 64
 #define	STATIC_TOR_MAGIC_STRING "gen-default-toraddress"
 
@@ -52,10 +57,10 @@ enum wire_addr_type {
 	ADDR_TYPE_IPV6 = 2,
 	ADDR_TYPE_TOR_V2_REMOVED = 3,
 	ADDR_TYPE_TOR_V3 = 4,
-	ADDR_TYPE_WEBSOCKET = 6,
+	ADDR_TYPE_DNS = 5,
+	ADDR_TYPE_WEBSOCKET = 6
 };
 
-/* Structure now fit for tor support */
 struct wireaddr {
 	enum wire_addr_type type;
 	u8 addrlen;
@@ -149,6 +154,18 @@ struct wireaddr_internal {
 
 bool wireaddr_internal_eq(const struct wireaddr_internal *a,
 			  const struct wireaddr_internal *b);
+
+bool separate_address_and_port(const tal_t *ctx, const char *arg,
+			       char **addr, u16 *port);
+
+bool is_ipaddr(const char *arg);
+
+bool is_toraddr(const char *arg);
+
+bool is_wildcardaddr(const char *arg);
+
+bool is_dnsaddr(const char *arg);
+
 bool parse_wireaddr_internal(const char *arg, struct wireaddr_internal *addr,
 			     u16 port, bool wildcard_ok, bool dns_ok,
 			     bool unresolved_ok, bool allow_deprecated,

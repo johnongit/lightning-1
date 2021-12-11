@@ -1,4 +1,5 @@
-#include "chainparams.h"
+#include "config.h"
+#include <bitcoin/chainparams.h>
 #include <ccan/array_size/array_size.h>
 #include <ccan/tal/str/str.h>
 #include <common/utils.h>
@@ -63,7 +64,7 @@ const struct chainparams networks[] = {
 				      0x5b, 0xbf, 0x28, 0xc3, 0x4f, 0x3a, 0x5e,
 				      0x33, 0x2a, 0x1f, 0xc7, 0xb2, 0xb7, 0x3c,
 				      0xf1, 0x88, 0x91, 0x0f}}}},
-     .rpc_port = 18332,
+     .rpc_port = 18443,
      .cli = "bitcoin-cli",
      .cli_args = "-regtest",
      .cli_min_supported_version = 150000,
@@ -79,7 +80,7 @@ const struct chainparams networks[] = {
 			   .bip32_privkey_version = BIP32_VER_TEST_PRIVATE},
      .is_elements = false},
     {.network_name = "signet",
-     .bip173_name = "tb",
+     .bip173_name = "tbs",
      .bip70_name = "signet",
      // 00000008819873e925422c1ff0f99f7cc9bbb232af63a077a480a3633bee1ef6
      .genesis_blockhash = {{{.u.u8 = {0xf6, 0x1e, 0xee, 0x3b, 0x63, 0xa3, 0x80,
@@ -223,14 +224,6 @@ const struct chainparams *chainparams_for_network(const char *network_name)
 		}
 	}
 	return NULL;
-}
-
-const struct chainparams **chainparams_for_networks(const tal_t *ctx)
-{
-	const struct chainparams **params = tal_arr(ctx, const struct chainparams*, 0);
-	for (size_t i = 0; i < ARRAY_SIZE(networks); i++)
-		tal_arr_expand(&params, &networks[i]);
-	return params;
 }
 
 const struct chainparams *chainparams_by_chainhash(const struct bitcoin_blkid *chain_hash)

@@ -1,3 +1,4 @@
+#include "config.h"
 #include <ccan/io/io.h>
 #include <common/memleak.h>
 #include <lightningd/plugin_hook.h>
@@ -337,6 +338,7 @@ void plugin_hook_db_sync(struct db *db)
 	size_t i;
 	size_t num_hooks;
 
+	db_check_plugins_not_shutdown(db);
 	const char **changes = db_changes(db);
 	num_hooks = tal_count(hook->hooks);
 	if (num_hooks == 0)

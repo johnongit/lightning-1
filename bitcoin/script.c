@@ -1,9 +1,10 @@
-#include "address.h"
-#include "locktime.h"
-#include "preimage.h"
-#include "pubkey.h"
-#include "script.h"
+#include "config.h"
 #include <assert.h>
+#include <bitcoin/address.h>
+#include <bitcoin/locktime.h>
+#include <bitcoin/preimage.h>
+#include <bitcoin/pubkey.h>
+#include <bitcoin/script.h>
 #include <ccan/endian/endian.h>
 #include <ccan/mem/mem.h>
 #include <common/utils.h>
@@ -186,13 +187,6 @@ u8 *scriptpubkey_p2pkh(const tal_t *ctx, const struct bitcoin_address *addr)
 	return script;
 }
 
-u8 *scriptpubkey_opreturn(const tal_t *ctx)
-{
-	u8 *script = tal_arr(ctx, u8, 0);
-
-	add_op(&script, OP_RETURN);
-	return script;
-}
 u8 *scriptpubkey_opreturn_padded(const tal_t *ctx)
 {
 	u8 *script = tal_arr(ctx, u8, 0);

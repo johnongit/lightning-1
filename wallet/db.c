@@ -1,9 +1,10 @@
-#include "db.h"
-
+#include "config.h"
 #include <bitcoin/script.h>
 #include <ccan/array_size/array_size.h>
+#include <ccan/build_assert/build_assert.h>
 #include <ccan/mem/mem.h>
 #include <ccan/tal/str/str.h>
+#include <common/htlc_state.h>
 #include <common/key_derive.h>
 #include <common/onionreply.h>
 #include <common/version.h>
@@ -11,6 +12,7 @@
 #include <hsmd/hsmd_wiregen.h>
 #include <lightningd/channel.h>
 #include <lightningd/plugin_hook.h>
+#include <wallet/db.h>
 #include <wallet/db_common.h>
 #include <wire/wire_sync.h>
 
@@ -858,6 +860,14 @@ static struct migration dbmigrations[] = {
 
     /* Issue #4887: reset the payments.id sequence after the migration above. Since this is a SELECT statement that would otherwise fail, make it an INSERT into the `vars` table.*/
     {SQL("/*PSQL*/INSERT INTO vars (name, intval) VALUES ('payment_id_reset', setval(pg_get_serial_sequence('payments', 'id'), COALESCE((SELECT MAX(id)+1 FROM payments), 1)))"), NULL},
+
+    /* Issue #4901: Partial index speeds up startup on nodes with ~1000 channels.  */
+    {&SQL("CREATE INDEX channel_htlcs_speedup_unresolved_idx"
+	 "    ON channel_htlcs(channel_id, direction)"
+	 " WHERE hstate NOT IN (9, 19);")
+	[BUILD_ASSERT_OR_ZERO( 9 == RCVD_REMOVE_ACK_REVOCATION) +
+	 BUILD_ASSERT_OR_ZERO(19 == SENT_REMOVE_ACK_REVOCATION)],
+     NULL},
 };
 
 /* Leak tracking. */
@@ -1266,6 +1276,7 @@ struct db *db_setup(const tal_t *ctx, struct lightningd *ld,
 	struct db *db = db_open(ctx, ld->wallet_dsn);
 	bool migrated;
 	db->log = new_log(db, ld->log_book, NULL, "database");
+	db->plugins_shutdown = &ld->plugins->shutdown;
 
 	db_begin_transaction(db);
 
@@ -2338,6 +2349,11 @@ void db_changes_add(struct db_stmt *stmt, const char * expanded)
 	}
 
 	tal_arr_expand(&db->changes, tal_strdup(db->changes, expanded));
+}
+
+void db_check_plugins_not_shutdown(struct db *db)
+{
+	assert(!*db->plugins_shutdown);
 }
 
 const char **db_changes(struct db *db)

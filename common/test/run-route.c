@@ -1,3 +1,4 @@
+#include "config.h"
 #include <assert.h>
 #include <common/channel_type.h>
 #include <common/dijkstra.h>
@@ -6,6 +7,7 @@
 #include <common/route.h>
 #include <common/setup.h>
 #include <common/type_to_string.h>
+#include <common/utils.h>
 #include <bitcoin/chainparams.h>
 #include <stdio.h>
 #include <wire/peer_wiregen.h>
@@ -19,9 +21,6 @@ bigsize_t fromwire_bigsize(const u8 **cursor UNNEEDED, size_t *max UNNEEDED)
 void fromwire_channel_id(const u8 **cursor UNNEEDED, size_t *max UNNEEDED,
 			 struct channel_id *channel_id UNNEEDED)
 { fprintf(stderr, "fromwire_channel_id called!\n"); abort(); }
-/* Generated stub for fromwire_channel_type */
-struct channel_type *fromwire_channel_type(const tal_t *ctx UNNEEDED, const u8 **cursor UNNEEDED, size_t *plen UNNEEDED)
-{ fprintf(stderr, "fromwire_channel_type called!\n"); abort(); }
 /* Generated stub for fromwire_tlv */
 bool fromwire_tlv(const u8 **cursor UNNEEDED, size_t *max UNNEEDED,
 		  const struct tlv_record_type *types UNNEEDED, size_t num_types UNNEEDED,
@@ -37,9 +36,6 @@ void towire_bigsize(u8 **pptr UNNEEDED, const bigsize_t val UNNEEDED)
 /* Generated stub for towire_channel_id */
 void towire_channel_id(u8 **pptr UNNEEDED, const struct channel_id *channel_id UNNEEDED)
 { fprintf(stderr, "towire_channel_id called!\n"); abort(); }
-/* Generated stub for towire_channel_type */
-void towire_channel_type(u8 **p UNNEEDED, const struct channel_type *channel_type UNNEEDED)
-{ fprintf(stderr, "towire_channel_type called!\n"); abort(); }
 /* Generated stub for towire_tlv */
 void towire_tlv(u8 **pptr UNNEEDED,
 		const struct tlv_record_type *types UNNEEDED, size_t num_types UNNEEDED,
@@ -188,11 +184,11 @@ int main(int argc, char *argv[])
 	struct gossmap *gossmap;
 	const double riskfactor = 1.0;
 	char gossip_version = GOSSIP_STORE_VERSION;
-	char gossipfilename[] = "/tmp/run-route-gossipstore.XXXXXX";
+	char *gossipfilename;
 
 	chainparams = chainparams_for_network("regtest");
 
-	store_fd = mkstemp(gossipfilename);
+	store_fd = tmpdir_mkstemp(tmpctx, "run-route-gossipstore.XXXXXX", &gossipfilename);
 	assert(write(store_fd, &gossip_version, sizeof(gossip_version))
 	       == sizeof(gossip_version));
 	gossmap = gossmap_load(tmpctx, gossipfilename, NULL);

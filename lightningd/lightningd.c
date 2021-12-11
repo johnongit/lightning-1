@@ -17,12 +17,9 @@
 
 /*~ Notice how includes are in ASCII order: this is actually enforced by
  * the build system under `make check-source`.  It avoids merge conflicts
- * and keeps things consistent. */
-#include "gossip_control.h"
-#include "hsm_control.h"
-#include "lightningd.h"
-#include "peer_control.h"
-#include "subd.h"
+ * and keeps things consistent.  It also make sure you include "config.h"
+ * before anything else. */
+#include "config.h"
 
 /*~ This is Ian Lance Taylor's libbacktrace.  It turns out that it's
  * horrifically difficult to obtain a decent backtrace in C; the standard
@@ -65,10 +62,15 @@
 #include <lightningd/channel_control.h>
 #include <lightningd/coin_mvts.h>
 #include <lightningd/connect_control.h>
+#include <lightningd/gossip_control.h>
+#include <lightningd/hsm_control.h>
 #include <lightningd/io_loop_with_timers.h>
+#include <lightningd/lightningd.h>
 #include <lightningd/onchain_control.h>
 #include <lightningd/options.h>
+#include <lightningd/peer_control.h>
 #include <lightningd/plugin.h>
+#include <lightningd/subd.h>
 #include <sys/resource.h>
 #include <wallet/txfilter.h>
 #include <wally_bip32.h>
@@ -197,7 +199,6 @@ static struct lightningd *new_lightningd(const tal_t *ctx)
 	 * NULL.  So we start with a zero-length array. */
 	ld->proposed_wireaddr = tal_arr(ld, struct wireaddr_internal, 0);
 	ld->proposed_listen_announce = tal_arr(ld, enum addr_listen_announce, 0);
-	ld->portnum = DEFAULT_PORT;
 	ld->listen = true;
 	ld->autolisten = true;
 	ld->reconnect = true;
@@ -242,6 +243,7 @@ static struct lightningd *new_lightningd(const tal_t *ctx)
 	 */
 	ld->plugins = plugins_new(ld, ld->log_book, ld);
 	ld->plugins->startup = true;
+	ld->plugins->shutdown = false;
 
 	/*~ This is set when a JSON RPC command comes in to shut us down. */
 	ld->stop_conn = NULL;
@@ -756,13 +758,14 @@ static int setup_sig_handlers(void)
 
 /*~ This removes the SIGCHLD handler, so we don't try to write
  * to a broken pipe. */
-static void remove_sigchild_handler(void)
+static void remove_sigchild_handler(struct io_conn *sigchld_conn)
 {
 	struct sigaction sigchild;
 
 	memset(&sigchild, 0, sizeof(struct sigaction));
 	sigchild.sa_handler = SIG_DFL;
 	sigaction(SIGCHLD, &sigchild, NULL);
+	io_close(sigchld_conn);
 }
 
 /*~ This is the routine which sets up the sigchild handling.  We just
@@ -853,6 +856,7 @@ int main(int argc, char *argv[])
 	struct htlc_in_map *unconnected_htlcs_in;
 	struct ext_key *bip32_base;
 	int sigchld_rfd;
+	struct io_conn *sigchld_conn;
 	int exit_code = 0;
 	char **orig_argv;
 	bool try_reexec;
@@ -948,6 +952,10 @@ int main(int argc, char *argv[])
 	 * between early args (including --plugin registration) and
 	 * non-early opts.  This also forks if they say --daemon. */
 	handle_early_opts(ld, argc, argv);
+
+	/*~ Set the default portnum according to the used network
+	 * similarly to what Bitcoin Core does to ports by default. */
+	ld->portnum = DEFAULT_PORT + chainparams->rpc_port - 8332;
 
 	/*~ Initialize all the plugins we just registered, so they can
 	 *  do their thing and tell us about themselves (including
@@ -1098,10 +1106,8 @@ int main(int argc, char *argv[])
 	 * "funding transaction spent" event which creates it. */
 	onchaind_replay_channels(ld);
 
-	/*~ Now handle sigchld, so we can clean up appropriately.
-	 * We don't keep a pointer to this, so our simple leak detection
-	 * code gets upset unless we mark it notleak(). */
-	notleak(io_new_conn(ld, sigchld_rfd, sigchld_rfd_in, ld));
+	/*~ Now handle sigchld, so we can clean up appropriately. */
+	sigchld_conn = notleak(io_new_conn(ld, sigchld_rfd, sigchld_rfd_in, ld));
 
 	/*~ Mark ourselves live.
 	 *
@@ -1167,6 +1173,8 @@ int main(int argc, char *argv[])
 	 *  shut down.
 	 */
 	assert(io_loop_ret == ld);
+
+	/* Fail JSON RPC requests and ignore plugin's responses */
 	ld->state = LD_STATE_SHUTDOWN;
 
 	stop_fd = -1;
@@ -1186,18 +1194,14 @@ int main(int argc, char *argv[])
 	stop_topology(ld->topology);
 
 	/* We're not going to collect our children. */
-	remove_sigchild_handler();
-
-	/* Tell plugins we're shutting down. */
-	shutdown_plugins(ld);
+	remove_sigchild_handler(sigchld_conn);
 	shutdown_subdaemons(ld);
 
-	/* Clean up the JSON-RPC. This needs to happen in a DB transaction since
-	 * it might actually be touching the DB in some destructors, e.g.,
-	 * unreserving UTXOs (see #1737) */
-	db_begin_transaction(ld->wallet->db);
+	/* Tell plugins we're shutting down, closes the db for write access. */
+	shutdown_plugins(ld);
+
+	/* Cleanup JSON RPC separately: destructors assume some list_head * in ld */
 	tal_free(ld->jsonrpc);
-	db_commit_transaction(ld->wallet->db);
 
 	/* Clean our our HTLC maps, since they use malloc. */
 	htlc_in_map_clear(&ld->htlcs_in);

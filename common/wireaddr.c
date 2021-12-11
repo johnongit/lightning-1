@@ -37,6 +37,11 @@ bool fromwire_wireaddr(const u8 **cursor, size_t *max, struct wireaddr *addr)
 	case ADDR_TYPE_TOR_V3:
 		addr->addrlen = TOR_V3_ADDRLEN;
 		break;
+	case ADDR_TYPE_DNS:
+		addr->addrlen = fromwire_u8(cursor, max);
+		memset(&addr->addr, 0, sizeof(addr->addr));
+		addr->addr[addr->addrlen] = 0;
+		break;
 	case ADDR_TYPE_WEBSOCKET:
 		addr->addrlen = 0;
 		break;
@@ -52,6 +57,8 @@ bool fromwire_wireaddr(const u8 **cursor, size_t *max, struct wireaddr *addr)
 void towire_wireaddr(u8 **pptr, const struct wireaddr *addr)
 {
 	towire_u8(pptr, addr->type);
+	if (addr->type == ADDR_TYPE_DNS)
+		towire_u8(pptr, addr->addrlen);
 	towire(pptr, addr->addr, addr->addrlen);
 	towire_u16(pptr, addr->port);
 }
@@ -211,6 +218,7 @@ bool wireaddr_is_wildcard(const struct wireaddr *addr)
 		return memeqzero(addr->addr, addr->addrlen);
 	case ADDR_TYPE_TOR_V2_REMOVED:
 	case ADDR_TYPE_TOR_V3:
+	case ADDR_TYPE_DNS:
 	case ADDR_TYPE_WEBSOCKET:
 		return false;
 	}
@@ -259,6 +267,8 @@ char *fmt_wireaddr_without_port(const tal_t * ctx, const struct wireaddr *a)
 	case ADDR_TYPE_TOR_V3:
 		return tal_fmt(ctx, "%s.onion",
 			       b32_encode(tmpctx, a->addr, a->addrlen));
+	case ADDR_TYPE_DNS:
+		return tal_fmt(ctx, "%s", a->addr);
 	case ADDR_TYPE_WEBSOCKET:
 		return tal_strdup(ctx, "websocket");
 	}
@@ -287,8 +297,8 @@ REGISTER_TYPE_TO_STRING(wireaddr, fmt_wireaddr);
  * Returns false if it wasn't one of these forms.  If it returns true,
  * it only overwrites *port if it was specified by <number> above.
  */
-static bool separate_address_and_port(const tal_t *ctx, const char *arg,
-				      char **addr, u16 *port)
+bool separate_address_and_port(const tal_t *ctx, const char *arg,
+			       char **addr, u16 *port)
 {
 	char *portcolon;
 
@@ -318,6 +328,86 @@ static bool separate_address_and_port(const tal_t *ctx, const char *arg,
 		char *endp;
 		*port = strtol(portcolon + 1, &endp, 10);
 		return *port != 0 && *endp == '\0';
+	}
+	return true;
+}
+
+bool is_ipaddr(const char *arg)
+{
+	struct in_addr v4;
+	struct in6_addr v6;
+	if (inet_pton(AF_INET, arg, &v4))
+		return true;
+	if (inet_pton(AF_INET6, arg, &v6))
+		return true;
+	return false;
+}
+
+bool is_toraddr(const char *arg)
+{
+	size_t i, arglen;
+	arglen = strlen(arg);
+	if (!strends(arg, ".onion"))
+		return false;
+	if (arglen != 16 + 6 && arglen != 56 + 6)
+		return false;
+	for (i = 0; i < arglen - 6; i++) {
+		if (arg[i] >= 'a' && arg[i] <= 'z')
+			continue;
+		if (arg[i] >= '0' && arg[i] <= '9')
+			continue;
+		return false;
+	}
+	return true;
+}
+
+bool is_wildcardaddr(const char *arg)
+{
+	return streq(arg, "");
+}
+
+/* Rules:
+ *
+ * - not longer than 255
+ * - segments are separated with . dot
+ * - segments do not start or end with - hyphen
+ * - segments must be longer thant zero
+ * - lowercase a-z and digits 0-9 and - hyphen
+ */
+bool is_dnsaddr(const char *arg)
+{
+	size_t i, arglen;
+	int lastdot;
+
+	if (is_ipaddr(arg) || is_toraddr(arg) || is_wildcardaddr(arg))
+		return false;
+
+	/* now that its not IP or TOR, check its a DNS name */
+	arglen = strlen(arg);
+	if (arglen > 255)
+		return false;
+	lastdot = -1;
+	for (i = 0; i < arglen; i++) {
+		if (arg[i] == '.') {
+			/* segment must be longer than zero */
+			if (i - lastdot == 1)
+				return false;
+			/* last segment can not end with hypen */
+			if (i != 0 && arg[i-1] == '-')
+				return false;
+			lastdot = i;
+			continue;
+		}
+		/* segment cannot start with hyphen */
+		if (i == lastdot + 1 && arg[i] == '-')
+			return false;
+		if (arg[i] >= 'a' && arg[i] <= 'z')
+			continue;
+		if (arg[i] >= '0' && arg[i] <= '9')
+			continue;
+		if (arg[i] == '-')
+			continue;
+		return false;
 	}
 	return true;
 }
@@ -599,7 +689,7 @@ bool parse_wireaddr_internal(const char *arg, struct wireaddr_internal *addr,
 
 	/* An empty string means IPv4 and IPv6 (which under Linux by default
 	 * means just IPv6, and IPv4 gets autobound). */
-	if (wildcard_ok && streq(ip, "")) {
+	if (wildcard_ok && is_wildcardaddr(ip)) {
 		addr->itype = ADDR_INTERNAL_ALLPROTO;
 		addr->u.port = splitport;
 		return true;
@@ -714,6 +804,7 @@ struct addrinfo *wireaddr_to_addrinfo(const tal_t *ctx,
 		return ai;
 	case ADDR_TYPE_TOR_V2_REMOVED:
 	case ADDR_TYPE_TOR_V3:
+	case ADDR_TYPE_DNS:
 	case ADDR_TYPE_WEBSOCKET:
 		break;
 	}
@@ -766,6 +857,7 @@ bool all_tor_addresses(const struct wireaddr_internal *wireaddr)
 			switch (wireaddr[i].u.wireaddr.type) {
 			case ADDR_TYPE_IPV4:
 			case ADDR_TYPE_IPV6:
+			case ADDR_TYPE_DNS:
 				return false;
 			case ADDR_TYPE_TOR_V2_REMOVED:
 			case ADDR_TYPE_TOR_V3:

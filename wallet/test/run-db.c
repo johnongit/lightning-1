@@ -1,3 +1,4 @@
+#include "config.h"
   #include <lightningd/log.h>
 
 static void db_test_fatal(const char *fmt, ...);
@@ -13,6 +14,7 @@ static void db_log_(struct log *log UNUSED, enum log_level level UNUSED, const s
 #include "test_utils.h"
 
 #include <common/setup.h>
+#include <common/utils.h>
 #include <stdio.h>
 #include <unistd.h>
 
@@ -76,14 +78,15 @@ void plugin_hook_db_sync(struct db *db UNNEEDED)
 static struct db *create_test_db(void)
 {
 	struct db *db;
-	char *dsn, filename[] = "/tmp/ldb-XXXXXX";
+	char *dsn, *filename;
 
-	int fd = mkstemp(filename);
+	int fd = tmpdir_mkstemp(tmpctx, "ldb-XXXXXX", &filename);
 	if (fd == -1)
 		return NULL;
 	close(fd);
 
 	dsn = tal_fmt(NULL, "sqlite3://%s", filename);
+	tal_free(filename);
 	db = db_open(NULL, dsn);
 	db->data_version = 0;
 	tal_free(dsn);

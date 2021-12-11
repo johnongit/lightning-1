@@ -1,4 +1,4 @@
-#include "pay.h"
+#include "config.h"
 #include <ccan/tal/str/str.h>
 #include <common/bolt12_merkle.h>
 #include <common/json_command.h>
@@ -14,6 +14,7 @@
 #include <lightningd/channel.h>
 #include <lightningd/json.h>
 #include <lightningd/notification.h>
+#include <lightningd/pay.h>
 #include <lightningd/peer_control.h>
 
 /* Routing failure object */
@@ -1392,7 +1393,7 @@ static struct command_result *param_route_hops(struct command *cmd,
 			   p_opt("direction", param_number, &direction),
 			   p_opt("style", param_route_hop_style, &style),
 			   p_opt("blinding", param_pubkey, &blinding),
-			   p_opt("enctlv", param_bin_from_hex, &enctlv),
+			   p_opt("encrypted_recipient_data", param_bin_from_hex, &enctlv),
 			   NULL))
 			return command_param_failed();
 

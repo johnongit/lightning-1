@@ -10,6 +10,7 @@
  *    reading and writing synchronously we could deadlock if we hit buffer
  *    limits, unlikely as that is.
  */
+#include "config.h"
 #include <ccan/asort/asort.h>
 #include <ccan/cast/cast.h>
 #include <ccan/mem/mem.h>
@@ -2320,8 +2321,8 @@ static void peer_in(struct peer *peer, const u8 *msg)
 	case WIRE_PING:
 	case WIRE_WARNING:
 	case WIRE_ERROR:
+	case WIRE_OBS2_ONION_MESSAGE:
 	case WIRE_ONION_MESSAGE:
-	case WIRE_OBS_ONION_MESSAGE:
 		abort();
 	}
 

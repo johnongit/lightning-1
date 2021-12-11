@@ -1,3 +1,4 @@
+#include "config.h"
 #include "../common/base32.c"
 #include "../common/wireaddr.c"
 
@@ -40,9 +41,6 @@ struct amount_sat amount_tx_fee(u32 fee_per_kw UNNEEDED, size_t weight UNNEEDED)
 /* Generated stub for fromwire */
 const u8 *fromwire(const u8 **cursor UNNEEDED, size_t *max UNNEEDED, void *copy UNNEEDED, size_t n UNNEEDED)
 { fprintf(stderr, "fromwire called!\n"); abort(); }
-/* Generated stub for fromwire_amount_sat */
-struct amount_sat fromwire_amount_sat(const u8 **cursor UNNEEDED, size_t *max UNNEEDED)
-{ fprintf(stderr, "fromwire_amount_sat called!\n"); abort(); }
 /* Generated stub for fromwire_bool */
 bool fromwire_bool(const u8 **cursor UNNEEDED, size_t *max UNNEEDED)
 { fprintf(stderr, "fromwire_bool called!\n"); abort(); }
@@ -78,9 +76,6 @@ void fromwire_u8_array(const u8 **cursor UNNEEDED, size_t *max UNNEEDED, u8 *arr
 /* Generated stub for towire */
 void towire(u8 **pptr UNNEEDED, const void *data UNNEEDED, size_t len UNNEEDED)
 { fprintf(stderr, "towire called!\n"); abort(); }
-/* Generated stub for towire_amount_sat */
-void towire_amount_sat(u8 **pptr UNNEEDED, const struct amount_sat sat UNNEEDED)
-{ fprintf(stderr, "towire_amount_sat called!\n"); abort(); }
 /* Generated stub for towire_bool */
 void towire_bool(u8 **pptr UNNEEDED, bool v UNNEEDED)
 { fprintf(stderr, "towire_bool called!\n"); abort(); }
@@ -117,6 +112,26 @@ int main(int argc, char *argv[])
 
 	common_setup(argv[0]);
 
+	/* Check IP/TOR/DNS parser */
+	assert(is_ipaddr("192.168.1.2"));
+	assert(!is_ipaddr("foo.bar.1.2"));
+	assert(is_toraddr("qubesosfasa4zl44o4tws22di6kepyzfeqv3tg4e3ztknltfxqrymdad.onion"));
+	assert(is_toraddr("qubesos4rrrrz6n4.onion"));
+	assert(!is_toraddr("QUBESOSfasa4zl44o4tws22di6kepyzfeqv3tg4e3ztknltfxqrymdad.onion"));
+	assert(!is_toraddr("QUBESOS4rrrrz6n4.onion"));
+	assert(!is_toraddr("qubesos-asa4zl44o4tws22di6kepyzfeqv3tg4e3ztknltfxqrymdad.onion"));
+	assert(is_dnsaddr("example.com"));
+	assert(is_dnsaddr("example.digits123.com"));
+	assert(is_dnsaddr("example-hyphen.com"));
+	assert(is_dnsaddr("123example.com"));
+	assert(is_dnsaddr("example123.com"));
+	assert(is_dnsaddr("is-valid.3hostname123.com"));
+	assert(!is_dnsaddr("UPPERCASE.invalid.com"));
+	assert(!is_dnsaddr("-.invalid.com"));
+	assert(!is_dnsaddr("invalid.-example.com"));
+	assert(!is_dnsaddr("invalid.example-.com"));
+	assert(!is_dnsaddr("invalid..example.com"));
+
 	/* Grossly invalid. */
 	assert(!separate_address_and_port(tmpctx, "[", &ip, &port));
 	assert(!separate_address_and_port(tmpctx, "[123", &ip, &port));
@@ -147,6 +162,19 @@ int main(int argc, char *argv[])
 	assert(separate_address_and_port(tmpctx, "192.168.2.255", &ip, &port));
 	assert(streq(ip, "192.168.2.255"));
 	assert(port == 0);
+
+	/* DNS types */
+	assert(separate_address_and_port(tmpctx, "example.com:42", &ip, &port));
+	assert(streq(ip, "example.com"));
+	assert(port == 42);
+	assert(separate_address_and_port(tmpctx, "sub.example.com:21", &ip, &port));
+	assert(streq(ip, "sub.example.com"));
+	assert(port == 21);
+	port = 123;
+	assert(separate_address_and_port(tmpctx, "sub.example.com", &ip, &port));
+	assert(streq(ip, "sub.example.com"));
+	assert(port == 123);
+	port = 0;
 
 	// unusual but possibly valid case
 	assert(separate_address_and_port(tmpctx, "[::1]", &ip, &port));

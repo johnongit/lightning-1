@@ -13,7 +13,7 @@
  * that point, the `json_connection` becomes the owner (or it's simply freed).
  */
 /* eg: { "jsonrpc":"2.0", "method" : "dev-echo", "params" : [ "hello", "Arabella!" ], "id" : "1" } */
-#include "ccan/config.h"
+#include "config.h"
 #include <ccan/asort/asort.h>
 #include <ccan/err/err.h>
 #include <ccan/io/io.h>
@@ -933,6 +933,11 @@ parse_request(struct json_connection *jcon, const jsmntok_t tok[])
 				    json_tok_full(jcon->buffer, method));
 	}
 
+	if (jcon->ld->state == LD_STATE_SHUTDOWN) {
+		return command_fail(c, LIGHTNINGD_SHUTDOWN,
+				    "lightningd is shutting down");
+	}
+
 	rpc_hook = tal(c, struct rpc_command_hook_payload);
 	rpc_hook->cmd = c;
 	/* Duplicate since we might outlive the connection */
@@ -972,7 +977,7 @@ static struct io_plan *start_json_stream(struct io_conn *conn,
 	io_wake(conn);
 
 	/* Once the stop_conn conn is drained, we can shut down. */
-	if (jcon->ld->stop_conn == conn) {
+	if (jcon->ld->stop_conn == conn && jcon->ld->state == LD_STATE_RUNNING) {
 		/* Return us to toplevel lightningd.c */
 		io_break(jcon->ld);
 		/* We never come back. */

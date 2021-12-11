@@ -1,6 +1,4 @@
-#include "invoices.h"
-#include "wallet.h"
-
+#include "config.h"
 #include <bitcoin/script.h>
 #include <ccan/array_size/array_size.h>
 #include <ccan/cast/cast.h>
@@ -17,7 +15,9 @@
 #include <lightningd/peer_control.h>
 #include <onchaind/onchaind_wiregen.h>
 #include <wallet/db_common.h>
+#include <wallet/invoices.h>
 #include <wallet/txfilter.h>
+#include <wallet/wallet.h>
 #include <wally_bip32.h>
 
 #define SQLITE_MAX_UINT 0x7FFFFFFFFFFFFFFF
@@ -393,52 +393,6 @@ struct utxo *wallet_utxo_get(const tal_t *ctx, struct wallet *w,
 	return utxo;
 }
 
-bool wallet_unreserve_output(struct wallet *w,
-			     const struct bitcoin_outpoint *outpoint)
-{
-	return wallet_update_output_status(w, outpoint,
-					   OUTPUT_STATE_RESERVED,
-					   OUTPUT_STATE_AVAILABLE);
-}
-
-/**
- * unreserve_utxo - Mark a reserved UTXO as available again
- */
-static void unreserve_utxo(struct wallet *w, const struct utxo *unres)
-{
-	if (!wallet_update_output_status(w, &unres->outpoint,
-					 OUTPUT_STATE_RESERVED,
-					 OUTPUT_STATE_AVAILABLE)) {
-		fatal("Unable to unreserve output");
-	}
-}
-
-/**
- * destroy_utxos - Destructor for an array of pointers to utxo
- */
-static void destroy_utxos(const struct utxo **utxos, struct wallet *w)
-{
-	for (size_t i = 0; i < tal_count(utxos); i++)
-		unreserve_utxo(w, utxos[i]);
-}
-
-void wallet_persist_utxo_reservation(struct wallet *w, const struct utxo **utxos)
-{
-	tal_del_destructor2(utxos, destroy_utxos, w);
-}
-
-void wallet_confirm_utxos(struct wallet *w, const struct utxo **utxos)
-{
-	tal_del_destructor2(utxos, destroy_utxos, w);
-	for (size_t i = 0; i < tal_count(utxos); i++) {
-		if (!wallet_update_output_status(
-			w, &utxos[i]->outpoint,
-			OUTPUT_STATE_RESERVED, OUTPUT_STATE_SPENT)) {
-			fatal("Unable to mark output as spent");
-		}
-	}
-}
-
 static void db_set_utxo(struct db *db, const struct utxo *utxo)
 {
 	struct db_stmt *stmt;
@@ -661,8 +615,8 @@ bool wallet_add_onchaind_utxo(struct wallet *w,
 	return true;
 }
 
-bool wallet_can_spend(struct wallet *w, const u8 *script,
-		      u32 *index, bool *output_is_p2sh)
+static bool wallet_can_spend(struct wallet *w, const u8 *script,
+			     u32 *index, bool *output_is_p2sh)
 {
 	struct ext_key ext;
 	u64 bip32_max_index = db_get_intvar(w->db, "bip32_max_index", 0);
@@ -801,8 +755,8 @@ bool wallet_shachain_add_hash(struct wallet *wallet,
 	return true;
 }
 
-bool wallet_shachain_load(struct wallet *wallet, u64 id,
-			  struct wallet_shachain *chain)
+static bool wallet_shachain_load(struct wallet *wallet, u64 id,
+				 struct wallet_shachain *chain)
 {
 	struct db_stmt *stmt;
 	chain->id = id;
@@ -1217,6 +1171,37 @@ static bool wallet_channel_load_inflights(struct wallet *w,
 		}
 
 	}
+	tal_free(stmt);
+	return ok;
+}
+
+static bool wallet_channel_config_load(struct wallet *w, const u64 id,
+				       struct channel_config *cc)
+{
+	bool ok = true;
+	const char *query = SQL(
+	    "SELECT dust_limit_satoshis, max_htlc_value_in_flight_msat, "
+	    "channel_reserve_satoshis, htlc_minimum_msat, to_self_delay, "
+	    "max_accepted_htlcs, max_dust_htlc_exposure_msat"
+	    " FROM channel_configs WHERE id= ? ;");
+	struct db_stmt *stmt = db_prepare_v2(w->db, query);
+	db_bind_u64(stmt, 0, id);
+	db_query_prepared(stmt);
+
+	if (!db_step(stmt))
+		return false;
+
+	cc->id = id;
+	db_col_amount_sat(stmt, "dust_limit_satoshis", &cc->dust_limit);
+	db_col_amount_msat(stmt, "max_htlc_value_in_flight_msat",
+			   &cc->max_htlc_value_in_flight);
+	db_col_amount_sat(stmt, "channel_reserve_satoshis",
+			  &cc->channel_reserve);
+	db_col_amount_msat(stmt, "htlc_minimum_msat", &cc->htlc_minimum);
+	cc->to_self_delay = db_col_int(stmt, "to_self_delay");
+	cc->max_accepted_htlcs = db_col_int(stmt, "max_accepted_htlcs");
+	db_col_amount_msat(stmt, "max_dust_htlc_exposure_msat",
+			   &cc->max_dust_htlc_exposure_msat);
 	tal_free(stmt);
 	return ok;
 }
@@ -1762,37 +1747,6 @@ static void wallet_channel_config_save(struct wallet *w,
 	db_bind_amount_msat(stmt, 6, &cc->max_dust_htlc_exposure_msat);
 	db_bind_u64(stmt, 7, cc->id);
 	db_exec_prepared_v2(take(stmt));
-}
-
-bool wallet_channel_config_load(struct wallet *w, const u64 id,
-				struct channel_config *cc)
-{
-	bool ok = true;
-	const char *query = SQL(
-	    "SELECT dust_limit_satoshis, max_htlc_value_in_flight_msat, "
-	    "channel_reserve_satoshis, htlc_minimum_msat, to_self_delay, "
-	    "max_accepted_htlcs, max_dust_htlc_exposure_msat"
-	    " FROM channel_configs WHERE id= ? ;");
-	struct db_stmt *stmt = db_prepare_v2(w->db, query);
-	db_bind_u64(stmt, 0, id);
-	db_query_prepared(stmt);
-
-	if (!db_step(stmt))
-		return false;
-
-	cc->id = id;
-	db_col_amount_sat(stmt, "dust_limit_satoshis", &cc->dust_limit);
-	db_col_amount_msat(stmt, "max_htlc_value_in_flight_msat",
-			   &cc->max_htlc_value_in_flight);
-	db_col_amount_sat(stmt, "channel_reserve_satoshis",
-			  &cc->channel_reserve);
-	db_col_amount_msat(stmt, "htlc_minimum_msat", &cc->htlc_minimum);
-	cc->to_self_delay = db_col_int(stmt, "to_self_delay");
-	cc->max_accepted_htlcs = db_col_int(stmt, "max_accepted_htlcs");
-	db_col_amount_msat(stmt, "max_dust_htlc_exposure_msat",
-			   &cc->max_dust_htlc_exposure_msat);
-	tal_free(stmt);
-	return ok;
 }
 
 u64 wallet_get_channel_dbid(struct wallet *wallet)
@@ -2734,10 +2688,16 @@ bool wallet_htlcs_load_in_for_channel(struct wallet *wallet,
 					     " FROM channel_htlcs"
 					     " WHERE direction= ?"
 					     " AND channel_id= ?"
-					     " AND hstate != ?"));
+					     " AND hstate NOT IN (?, ?)"));
 	db_bind_int(stmt, 0, DIRECTION_INCOMING);
 	db_bind_u64(stmt, 1, chan->dbid);
-	db_bind_int(stmt, 2, SENT_REMOVE_ACK_REVOCATION);
+	/* We need to generate `hstate NOT IN (9, 19)` in order to match
+	 * the `WHERE` clause of the database index; incoming HTLCs will
+	 * never actually get the state `RCVD_REMOVE_ACK_REVOCATION`.
+	 * See https://sqlite.org/partialindex.html#queries_using_partial_indexes
+	 */
+	db_bind_int(stmt, 2, RCVD_REMOVE_ACK_REVOCATION); /* Not gonna happen.  */
+	db_bind_int(stmt, 3, SENT_REMOVE_ACK_REVOCATION);
 	db_query_prepared(stmt);
 
 	while (db_step(stmt)) {
@@ -2780,10 +2740,16 @@ bool wallet_htlcs_load_out_for_channel(struct wallet *wallet,
 					     " FROM channel_htlcs"
 					     " WHERE direction = ?"
 					     " AND channel_id = ?"
-					     " AND hstate != ?"));
+					     " AND hstate NOT IN (?, ?)"));
 	db_bind_int(stmt, 0, DIRECTION_OUTGOING);
 	db_bind_u64(stmt, 1, chan->dbid);
+	/* We need to generate `hstate NOT IN (9, 19)` in order to match
+	 * the `WHERE` clause of the database index; outgoing HTLCs will
+	 * never actually get the state `SENT_REMOVE_ACK_REVOCATION`.
+	 * See https://sqlite.org/partialindex.html#queries_using_partial_indexes
+	 */
 	db_bind_int(stmt, 2, RCVD_REMOVE_ACK_REVOCATION);
+	db_bind_int(stmt, 3, SENT_REMOVE_ACK_REVOCATION); /* Not gonna happen.  */
 	db_query_prepared(stmt);
 
 	while (db_step(stmt)) {
@@ -3077,29 +3043,6 @@ void wallet_payment_store(struct wallet *wallet,
 		list_del(&payment->list);
 		tal_del_destructor(payment, destroy_unstored_payment);
 	}
-}
-
-void wallet_payment_delete(struct wallet *wallet,
-			   const struct sha256 *payment_hash,
-			   u64 partid)
-{
-	struct db_stmt *stmt;
-	struct wallet_payment *payment;
-
-	payment = find_unstored_payment(wallet, payment_hash, partid);
-	if (payment) {
-		tal_free(payment);
-		return;
-	}
-
-	stmt = db_prepare_v2(
-	    wallet->db, SQL("DELETE FROM payments WHERE payment_hash = ?"
-			    " AND partid = ?"));
-
-	db_bind_sha256(stmt, 0, payment_hash);
-	db_bind_u64(stmt, 1, partid);
-
-	db_exec_prepared_v2(take(stmt));
 }
 
 u64 wallet_payment_get_groupid(struct wallet *wallet,

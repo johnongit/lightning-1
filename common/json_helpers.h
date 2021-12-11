@@ -83,6 +83,10 @@ bool split_tok(const char *buffer, const jsmntok_t *tok,
 struct tlv_onionmsg_payload_reply_path *
 json_to_reply_path(const tal_t *ctx, const char *buffer, const jsmntok_t *tok);
 
+/* Obsolete version! */
+struct tlv_obs2_onionmsg_payload_reply_path *
+json_to_obs2_reply_path(const tal_t *ctx, const char *buffer, const jsmntok_t *tok);
+
 /* Helpers for outputting JSON results */
 
 /* '"fieldname" : "0289abcdef..."' or "0289abcdef..." if fieldname is NULL */
@@ -127,11 +131,6 @@ void json_add_outpoint(struct json_stream *result, const char *fieldname,
 void json_add_short_channel_id(struct json_stream *response,
 			       const char *fieldname,
 			       const struct short_channel_id *id);
-
-/* '"fieldname" : "1234:5:6/7"' */
-void json_add_short_channel_id_dir(struct json_stream *response,
-				   const char *fieldname,
-				   const struct short_channel_id_dir *id);
 
 /* JSON serialize a network address for a node */
 void json_add_address(struct json_stream *response, const char *fieldname,

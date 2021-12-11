@@ -282,6 +282,7 @@ def test_plugin_disable(node_factory):
     with pytest.raises(RpcError):
         n.rpc.hello(name='Sun')
     assert n.daemon.is_in_log('helloworld.py: disabled via disable-plugin')
+    n.stop()
 
     # Also works by basename.
     n = node_factory.get_node(options=OrderedDict([('plugin-dir', plugin_dir),
@@ -290,6 +291,7 @@ def test_plugin_disable(node_factory):
     with pytest.raises(RpcError):
         n.rpc.hello(name='Sun')
     assert n.daemon.is_in_log('helloworld.py: disabled via disable-plugin')
+    n.stop()
 
     # Other order also works!
     n = node_factory.get_node(options=OrderedDict([('disable-plugin',
@@ -298,6 +300,7 @@ def test_plugin_disable(node_factory):
     with pytest.raises(RpcError):
         n.rpc.hello(name='Sun')
     assert n.daemon.is_in_log('helloworld.py: disabled via disable-plugin')
+    n.stop()
 
     # Both orders of explicit specification work.
     n = node_factory.get_node(options=OrderedDict([('disable-plugin',
@@ -308,6 +311,7 @@ def test_plugin_disable(node_factory):
     with pytest.raises(RpcError):
         n.rpc.hello(name='Sun')
     assert n.daemon.is_in_log('helloworld.py: disabled via disable-plugin')
+    n.stop()
 
     # Both orders of explicit specification work.
     n = node_factory.get_node(options=OrderedDict([('plugin',
@@ -322,6 +326,7 @@ def test_plugin_disable(node_factory):
     # Still disabled if we load directory.
     n.rpc.plugin_startdir(directory=os.path.join(os.getcwd(), "contrib/plugins"))
     n.daemon.wait_for_log('helloworld.py: disabled via disable-plugin')
+    n.stop()
 
     # Check that list works
     n = node_factory.get_node(options={'disable-plugin':
@@ -392,7 +397,7 @@ def test_pay_plugin(node_factory):
 
     # Make sure usage messages are present.
     msg = 'pay bolt11 [msatoshi] [label] [riskfactor] [maxfeepercent] '\
-          '[retry_for] [maxdelay] [exemptfee] [localofferid]'
+          '[retry_for] [maxdelay] [exemptfee] [localofferid] [exclude]'
     if DEVELOPER:
         msg += ' [use_shadow]'
     assert only_one(l1.rpc.help('pay')['help'])['command'] == msg
@@ -443,7 +448,7 @@ def test_plugin_connected_hook_chaining(node_factory):
         return peers == [] or not peers[0]['connected']
 
     wait_for(check_disconnect)
-    assert not l3.daemon.is_in_log(f"peer_connected_logger_b {l3id}")
+    assert not l1.daemon.is_in_log(f"peer_connected_logger_b {l3id}")
 
 
 def test_async_rpcmethod(node_factory, executor):
@@ -1077,6 +1082,38 @@ def test_htlc_accepted_hook_direct_restart(node_factory, executor):
     l2.daemon.wait_for_log(r'hold_htlcs.py initializing')
     l2.daemon.wait_for_log(r'Holding onto an incoming htlc for 10 seconds')
     f1.result()
+
+
+def test_htlc_accepted_hook_shutdown(node_factory, executor):
+    """Hooks of important-plugins are never removed and these plugins are kept
+       alive until after subdaemons are shutdown. Also tests shutdown notification.
+    """
+    l1, l2 = node_factory.line_graph(2, opts=[
+        {'may_reconnect': True, 'log-level': 'info'},
+        {'may_reconnect': True, 'log-level': 'debug',
+         'plugin': [os.path.join(os.getcwd(), 'tests/plugins/misc_notifications.py')],
+         'important-plugin': [os.path.join(os.getcwd(), 'tests/plugins/fail_htlcs.py')]}
+    ])
+
+    l2.rpc.plugin_stop(os.path.join(os.getcwd(), 'tests/plugins/misc_notifications.py'))
+    l2.daemon.wait_for_log(r'datastore success')
+    l2.rpc.plugin_start(os.path.join(os.getcwd(), 'tests/plugins/misc_notifications.py'))
+
+    i1 = l2.rpc.invoice(msatoshi=1000, label="inv1", description="desc")['bolt11']
+
+    # fail_htlcs.py makes payment fail
+    with pytest.raises(RpcError):
+        l1.rpc.pay(i1)
+
+    f_stop = executor.submit(l2.rpc.stop)
+    l2.daemon.wait_for_log(r'plugin-misc_notifications.py: delaying shutdown with 5s')
+
+    # Should still fail htlc while shutting down
+    with pytest.raises(RpcError):
+        l1.rpc.pay(i1)
+
+    l2.daemon.wait_for_log(r'datastore failed')
+    f_stop.result()
 
 
 @pytest.mark.developer("without DEVELOPER=1, gossip v slow")

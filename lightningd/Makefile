@@ -11,7 +11,6 @@ LIGHTNINGD_SRC :=				\
 	lightningd/connect_control.c		\
 	lightningd/onion_message.c		\
 	lightningd/gossip_control.c		\
-	lightningd/gossip_msg.c			\
 	lightningd/hsm_control.c		\
 	lightningd/htlc_end.c			\
 	lightningd/htlc_set.c			\
@@ -100,7 +99,6 @@ LIGHTNINGD_COMMON_OBJS :=			\
 	common/htlc_wire.o			\
 	common/key_derive.o			\
 	common/keyset.o				\
-	common/io_lock.o			\
 	common/json.o				\
 	common/json_helpers.o			\
 	common/json_stream.o			\

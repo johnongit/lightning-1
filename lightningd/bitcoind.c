@@ -3,21 +3,22 @@
  * by using bitcoin-cli, but the interface we use to gather Bitcoin data is
  * standardized and you can use another plugin as the Bitcoin backend, or
  * even make your own! */
-#include "bitcoin/base58.h"
-#include "bitcoin/block.h"
-#include "bitcoin/feerate.h"
-#include "bitcoin/script.h"
-#include "bitcoin/shadouble.h"
-#include "bitcoind.h"
-#include "lightningd.h"
-#include "log.h"
+#include "config.h"
+#include <bitcoin/base58.h>
+#include <bitcoin/block.h>
+#include <bitcoin/feerate.h>
+#include <bitcoin/script.h>
+#include <bitcoin/shadouble.h>
 #include <ccan/array_size/array_size.h>
 #include <ccan/io/io.h>
 #include <ccan/tal/str/str.h>
 #include <common/json_helpers.h>
 #include <common/memleak.h>
+#include <lightningd/bitcoind.h>
 #include <lightningd/chaintopology.h>
 #include <lightningd/io_loop_with_timers.h>
+#include <lightningd/lightningd.h>
+#include <lightningd/log.h>
 #include <lightningd/plugin.h>
 
 /* The names of the requests we can make to our Bitcoin backend. */
@@ -405,8 +406,7 @@ void bitcoind_getrawblockbyheight_(struct bitcoind *bitcoind,
 	req = jsonrpc_request_start(bitcoind, "getrawblockbyheight",
 				    bitcoind->log,
 				    NULL,  getrawblockbyheight_callback,
-				    /* Freed in cb. */
-				    notleak(call));
+				    call);
 	json_add_num(req->stream, "height", height);
 	jsonrpc_request_end(req);
 	bitcoin_plugin_send(bitcoind, req);
