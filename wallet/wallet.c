@@ -8,13 +8,16 @@
 #include <common/fee_states.h>
 #include <common/onionreply.h>
 #include <common/type_to_string.h>
+#include <db/bindings.h>
+#include <db/common.h>
+#include <db/exec.h>
+#include <db/utils.h>
 #include <lightningd/chaintopology.h>
 #include <lightningd/channel.h>
 #include <lightningd/coin_mvts.h>
 #include <lightningd/notification.h>
 #include <lightningd/peer_control.h>
 #include <onchaind/onchaind_wiregen.h>
-#include <wallet/db_common.h>
 #include <wallet/invoices.h>
 #include <wallet/txfilter.h>
 #include <wallet/wallet.h>
@@ -44,6 +47,21 @@ struct channel_state_param {
 	const char *type_key;
 	const enum channel_state_bucket state;
 };
+
+/* Implement db_fatal, as a wrapper around fatal.
+ * We use a ifndef block so that it can get be
+ * implemented in a test file first, if necessary */
+#ifndef DB_FATAL
+#define DB_FATAL
+void db_fatal(const char *fmt, ...)
+{
+	va_list ap;
+
+	va_start(ap, fmt);
+	fatal_vfmt(fmt, ap);
+	va_end(ap);
+}
+#endif /* DB_FATAL */
 
 static void outpointfilters_init(struct wallet *w)
 {
@@ -615,8 +633,8 @@ bool wallet_add_onchaind_utxo(struct wallet *w,
 	return true;
 }
 
-static bool wallet_can_spend(struct wallet *w, const u8 *script,
-			     u32 *index, bool *output_is_p2sh)
+bool wallet_can_spend(struct wallet *w, const u8 *script,
+		      u32 *index, bool *output_is_p2sh)
 {
 	struct ext_key ext;
 	u64 bip32_max_index = db_get_intvar(w->db, "bip32_max_index", 0);
@@ -851,7 +869,7 @@ wallet_htlc_sigs_load(const tal_t *ctx, struct wallet *w, u64 channelid,
 		 *...
 		 * * if `option_anchors` applies to this commitment
 		 *   transaction, `SIGHASH_SINGLE|SIGHASH_ANYONECANPAY` is
-		 *   used.
+		 *   used as described in [BOLT #5]
 		 */
 		if (option_anchor_outputs)
 			sig.sighash_type = SIGHASH_SINGLE|SIGHASH_ANYONECANPAY;
@@ -996,6 +1014,7 @@ void wallet_inflight_add(struct wallet *w, struct channel_inflight *inflight)
 				 ", funding_satoshi"
 				 ", our_funding_satoshi"
 				 ", funding_psbt"
+				 ", funding_tx_remote_sigs_received"
 				 ", last_tx"
 				 ", last_sig"
 				 ", lease_commit_sig"
@@ -1003,8 +1022,9 @@ void wallet_inflight_add(struct wallet *w, struct channel_inflight *inflight)
 				 ", lease_chan_max_ppt"
 				 ", lease_expiry"
 				 ", lease_blockheight_start"
+				 ", lease_fee"
 				 ") VALUES ("
-				 "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);"));
+				 "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);"));
 
 	db_bind_u64(stmt, 0, inflight->channel->dbid);
 	db_bind_txid(stmt, 1, &inflight->funding->outpoint.txid);
@@ -1013,21 +1033,24 @@ void wallet_inflight_add(struct wallet *w, struct channel_inflight *inflight)
 	db_bind_amount_sat(stmt, 4, &inflight->funding->total_funds);
 	db_bind_amount_sat(stmt, 5, &inflight->funding->our_funds);
 	db_bind_psbt(stmt, 6, inflight->funding_psbt);
-	db_bind_psbt(stmt, 7, inflight->last_tx->psbt);
-	db_bind_signature(stmt, 8, &inflight->last_sig.s);
+	db_bind_int(stmt, 7, inflight->remote_tx_sigs ? 1 : 0);
+	db_bind_psbt(stmt, 8, inflight->last_tx->psbt);
+	db_bind_signature(stmt, 9, &inflight->last_sig.s);
 
 	if (inflight->lease_expiry != 0) {
-		db_bind_signature(stmt, 9, inflight->lease_commit_sig);
-		db_bind_int(stmt, 10, inflight->lease_chan_max_msat);
-		db_bind_int(stmt, 11, inflight->lease_chan_max_ppt);
-		db_bind_int(stmt, 12, inflight->lease_expiry);
-		db_bind_int(stmt, 13, inflight->lease_blockheight_start);
+		db_bind_signature(stmt, 10, inflight->lease_commit_sig);
+		db_bind_int(stmt, 11, inflight->lease_chan_max_msat);
+		db_bind_int(stmt, 12, inflight->lease_chan_max_ppt);
+		db_bind_int(stmt, 13, inflight->lease_expiry);
+		db_bind_int(stmt, 14, inflight->lease_blockheight_start);
+		db_bind_amount_msat(stmt, 15, &inflight->lease_fee);
 	} else {
-		db_bind_null(stmt, 9);
 		db_bind_null(stmt, 10);
 		db_bind_null(stmt, 11);
-		db_bind_int(stmt, 12, 0);
-		db_bind_null(stmt, 13);
+		db_bind_null(stmt, 12);
+		db_bind_int(stmt, 13, 0);
+		db_bind_null(stmt, 14);
+		db_bind_null(stmt, 15);
 	}
 
 	db_exec_prepared_v2(stmt);
@@ -1083,6 +1106,7 @@ wallet_stmt2inflight(struct wallet *w, struct db_stmt *stmt,
 		     struct channel *chan)
 {
 	struct amount_sat funding_sat, our_funding_sat;
+	struct amount_msat lease_fee;
 	struct bitcoin_outpoint funding;
 	struct bitcoin_signature last_sig;
 	struct channel_inflight *inflight;
@@ -1106,14 +1130,18 @@ wallet_stmt2inflight(struct wallet *w, struct db_stmt *stmt,
 		lease_chan_max_msat = db_col_int(stmt, "lease_chan_max_msat");
 		lease_chan_max_ppt = db_col_int(stmt, "lease_chan_max_ppt");
 		lease_blockheight_start = db_col_int(stmt, "lease_blockheight_start");
+		db_col_amount_msat(stmt, "lease_fee", &lease_fee);
 	} else {
 		lease_commit_sig = NULL;
 		lease_chan_max_msat = 0;
 		lease_chan_max_ppt = 0;
 		lease_blockheight_start = 0;
+		lease_fee = AMOUNT_MSAT(0);
+
 		db_col_ignore(stmt, "lease_chan_max_msat");
 		db_col_ignore(stmt, "lease_chan_max_ppt");
 		db_col_ignore(stmt, "lease_blockheight_start");
+		db_col_ignore(stmt, "lease_fee");
 	}
 
 	inflight = new_inflight(chan, &funding,
@@ -1127,7 +1155,8 @@ wallet_stmt2inflight(struct wallet *w, struct db_stmt *stmt,
 				lease_commit_sig,
 				lease_chan_max_msat,
 				lease_chan_max_ppt,
-				lease_blockheight_start);
+				lease_blockheight_start,
+				lease_fee);
 
 	/* Pull out the serialized tx-sigs-received-ness */
 	inflight->remote_tx_sigs = db_col_int(stmt, "funding_tx_remote_sigs_received");
@@ -1155,6 +1184,7 @@ static bool wallet_channel_load_inflights(struct wallet *w,
 					", lease_chan_max_msat"
 					", lease_chan_max_ppt"
 					", lease_blockheight_start"
+					", lease_fee"
 					" FROM channel_funding_inflights"
 					" WHERE channel_id = ?"
 					" ORDER BY funding_feerate"));
@@ -1233,7 +1263,7 @@ static struct channel *wallet_stmt2channel(struct wallet *w, struct db_stmt *stm
 	struct pubkey local_funding_pubkey;
 	struct pubkey *future_per_commitment_point;
 	struct amount_sat funding_sat, our_funding_sat;
-	struct amount_msat push_msat, our_msat, msat_to_us_min, msat_to_us_max;
+	struct amount_msat push_msat, our_msat, msat_to_us_min, msat_to_us_max, htlc_minimum_msat, htlc_maximum_msat;
 	struct channel_type *type;
 	secp256k1_ecdsa_signature *lease_commit_sig;
 	u32 lease_chan_max_msat;
@@ -1373,6 +1403,8 @@ static struct channel *wallet_stmt2channel(struct wallet *w, struct db_stmt *stm
 	db_col_amount_msat(stmt, "msatoshi_local", &our_msat);
 	db_col_amount_msat(stmt, "msatoshi_to_us_min", &msat_to_us_min);
 	db_col_amount_msat(stmt, "msatoshi_to_us_max", &msat_to_us_max);
+	db_col_amount_msat(stmt, "htlc_minimum_msat", &htlc_minimum_msat);
+	db_col_amount_msat(stmt, "htlc_maximum_msat", &htlc_maximum_msat);
 
 	if (!db_col_is_null(stmt, "lease_commit_sig")) {
 		lease_commit_sig = tal(w, secp256k1_ecdsa_signature);
@@ -1448,7 +1480,9 @@ static struct channel *wallet_stmt2channel(struct wallet *w, struct db_stmt *stm
 			   db_col_int(stmt, "lease_expiry"),
 			   lease_commit_sig,
 			   lease_chan_max_msat,
-			   lease_chan_max_ppt);
+			   lease_chan_max_ppt,
+			   htlc_minimum_msat,
+			   htlc_maximum_msat);
 
 	if (!wallet_channel_load_inflights(w, chan)) {
 		tal_free(chan);
@@ -1542,6 +1576,8 @@ static bool wallet_channels_load_active(struct wallet *w)
 					", lease_commit_sig"
 					", lease_chan_max_msat"
 					", lease_chan_max_ppt"
+					", htlc_minimum_msat"
+					", htlc_maximum_msat"
 					" FROM channels"
                                         " WHERE state != ?;")); //? 0
 	db_bind_int(stmt, 0, CLOSED);
@@ -1821,8 +1857,10 @@ void wallet_channel_save(struct wallet *w, struct channel *chan)
 					"  lease_expiry=?," // 38
 					"  lease_commit_sig=?," // 39
 					"  lease_chan_max_msat=?," // 40
-					"  lease_chan_max_ppt=?" // 41
-					" WHERE id=?")); // 42
+					"  lease_chan_max_ppt=?," // 41
+					"  htlc_minimum_msat=?," // 42
+					"  htlc_maximum_msat=?" // 43
+					" WHERE id=?")); // 44
 	db_bind_u64(stmt, 0, chan->their_shachain.id);
 	if (chan->scid)
 		db_bind_short_channel_id(stmt, 1, chan->scid);
@@ -1885,7 +1923,9 @@ void wallet_channel_save(struct wallet *w, struct channel *chan)
 		db_bind_null(stmt, 40);
 		db_bind_null(stmt, 41);
 	}
-	db_bind_u64(stmt, 42, chan->dbid);
+	db_bind_amount_msat(stmt, 42, &chan->htlc_minimum_msat);
+	db_bind_amount_msat(stmt, 43, &chan->htlc_maximum_msat);
+	db_bind_u64(stmt, 44, chan->dbid);
 	db_exec_prepared_v2(take(stmt));
 
 	wallet_channel_config_save(w, &chan->channel_info.their_config);
@@ -2253,10 +2293,10 @@ int wallet_extract_owned_outputs(struct wallet *w, const struct wally_tx *wtx,
 
 		/* We only record final ledger movements */
 		if (blockheight) {
-			mvt = new_coin_deposit_sat(utxo, "wallet",
-						   &utxo->outpoint,
-						   blockheight ? *blockheight : 0,
-						   utxo->amount);
+			mvt = new_coin_wallet_deposit(tmpctx, &utxo->outpoint,
+						      *blockheight,
+						      utxo->amount,
+						      DEPOSIT);
 			notify_chain_mvt(w->ld, mvt);
 		}
 
@@ -2372,8 +2412,9 @@ void wallet_htlc_save_out(struct wallet *wallet,
 		" malformed_onion,"
 		" partid,"
 		" groupid,"
+		" fees_msat,"
 		" min_commit_num"
-		") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?);"));
+		") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?);"));
 
 	db_bind_u64(stmt, 0, chan->dbid);
 	db_bind_u64(stmt, 1, out->key.id);
@@ -2403,7 +2444,9 @@ void wallet_htlc_save_out(struct wallet *wallet,
 		db_bind_u64(stmt, 10, out->partid);
 		db_bind_u64(stmt, 11, out->groupid);
 	}
-	db_bind_u64(stmt, 12, min_u64(chan->next_index[LOCAL]-1,
+
+	db_bind_amount_msat(stmt, 12, &out->fees);
+	db_bind_u64(stmt, 13, min_u64(chan->next_index[LOCAL]-1,
 				      chan->next_index[REMOTE]-1));
 
 	db_exec_prepared_v2(stmt);
@@ -2491,6 +2534,7 @@ static bool wallet_stmt2htlc_in(struct channel *channel,
 	in->status = NULL;
 	/* FIXME: save blinding in db !*/
 	in->blinding = NULL;
+	in->payload = NULL;
 
 	db_col_sha256(stmt, "payment_hash", &in->payment_hash);
 
@@ -2598,26 +2642,18 @@ static bool wallet_stmt2htlc_out(struct wallet *wallet,
 		out->failmsg = db_col_arr(out, stmt, "localfailmsg", u8);
 
 	out->in = NULL;
+	db_col_amount_msat(stmt, "fees_msat", &out->fees);
 
 	if (!db_col_is_null(stmt, "origin_htlc")) {
 		u64 in_id = db_col_u64(stmt, "origin_htlc");
 		struct htlc_in *hin;
 
+		/* If it failed / succeeded already, we could have
+		 * closed incoming htlc */
 		hin = remove_htlc_in_by_dbid(unconnected_htlcs_in, in_id);
 		if (hin)
 			htlc_out_connect_htlc_in(out, hin);
 		out->am_origin = false;
-		if (!out->in && !out->preimage) {
-#ifdef COMPAT_V061
-			log_broken(wallet->log,
-				   "Missing preimage for orphaned HTLC; replacing with zeros");
-			out->preimage = talz(out, struct preimage);
-#else
-			fatal("Unable to find corresponding htlc_in %"PRIu64
-			      " for unfulfilled htlc_out %"PRIu64,
-			      in_id, out->dbid);
-#endif
-		}
 		db_col_ignore(stmt, "partid");
 		db_col_ignore(stmt, "groupid");
 	} else {
@@ -2737,6 +2773,7 @@ bool wallet_htlcs_load_out_for_channel(struct wallet *wallet,
 					     ", partid"
 					     ", localfailmsg"
 					     ", groupid"
+					     ", fees_msat"
 					     " FROM channel_htlcs"
 					     " WHERE direction = ?"
 					     " AND channel_id = ?"
@@ -2805,6 +2842,11 @@ bool wallet_invoice_delete(struct wallet *wallet,
 {
 	return invoices_delete(wallet->invoices, invoice);
 }
+bool wallet_invoice_delete_description(struct wallet *wallet,
+				       struct invoice invoice)
+{
+	return invoices_delete_description(wallet->invoices, invoice);
+}
 void wallet_invoice_delete_expired(struct wallet *wallet, u64 e)
 {
 	invoices_delete_expired(wallet->invoices, e);
@@ -2843,9 +2885,9 @@ void wallet_invoice_waitone(const tal_t *ctx,
 	invoices_waitone(ctx, wallet->invoices, invoice, cb, cbarg);
 }
 
-const struct invoice_details *wallet_invoice_details(const tal_t *ctx,
-						     struct wallet *wallet,
-						     struct invoice invoice)
+struct invoice_details *wallet_invoice_details(const tal_t *ctx,
+					       struct wallet *wallet,
+					       struct invoice invoice)
 {
 	return invoices_get_details(ctx, wallet->invoices, invoice);
 }
@@ -2982,8 +3024,9 @@ void wallet_payment_store(struct wallet *wallet,
 		    "  total_msat,"
 		    "  partid,"
 		    "  local_offer_id,"
-		    "  groupid"
-		    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);"));
+		    "  groupid,"
+		    "  paydescription"
+		    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);"));
 
 	db_bind_int(stmt, 0, payment->status);
 	db_bind_sha256(stmt, 1, &payment->payment_hash);
@@ -3031,6 +3074,11 @@ void wallet_payment_store(struct wallet *wallet,
 		db_bind_null(stmt, 13);
 
 	db_bind_u64(stmt, 14, payment->groupid);
+
+	if (payment->description != NULL)
+		db_bind_text(stmt, 15, payment->description);
+	else
+		db_bind_null(stmt, 15);
 
 	db_exec_prepared_v2(stmt);
 	payment->id = db_last_insert_id_v2(stmt);
@@ -3126,6 +3174,11 @@ static struct wallet_payment *wallet_stmt2payment(const tal_t *ctx,
 	else
 		payment->label = NULL;
 
+	if (!db_col_is_null(stmt, "paydescription"))
+		payment->description = db_col_strdup(payment, stmt, "paydescription");
+	else
+		payment->description = NULL;
+
 	if (!db_col_is_null(stmt, "bolt11"))
 		payment->invstring = db_col_strdup(payment, stmt, "bolt11");
 	else
@@ -3185,6 +3238,7 @@ wallet_payment_by_hash(const tal_t *ctx, struct wallet *wallet,
 					     ", msatoshi_sent"
 					     ", description"
 					     ", bolt11"
+					     ", paydescription"
 					     ", failonionreply"
 					     ", total_msat"
 					     ", partid"
@@ -3421,6 +3475,7 @@ wallet_payment_list(const tal_t *ctx,
 				      ", msatoshi_sent"
 				      ", description"
 				      ", bolt11"
+				      ", paydescription"
 				      ", failonionreply"
 				      ", total_msat"
 				      ", partid"
@@ -3487,6 +3542,7 @@ wallet_payments_by_offer(const tal_t *ctx,
 					     ", msatoshi_sent"
 					     ", description"
 					     ", bolt11"
+					     ", paydescription"
 					     ", failonionreply"
 					     ", total_msat"
 					     ", partid"
@@ -4178,7 +4234,8 @@ static bool wallet_forwarded_payment_update(struct wallet *w,
 					    const struct htlc_out *out,
 					    enum forward_status state,
 					    enum onion_wire failcode,
-					    struct timeabs *resolved_time)
+					    struct timeabs *resolved_time,
+					    enum forward_style forward_style)
 {
 	struct db_stmt *stmt;
 	bool changed;
@@ -4194,6 +4251,7 @@ static bool wallet_forwarded_payment_update(struct wallet *w,
 				 ", state=?"
 				 ", resolved_time=?"
 				 ", failcode=?"
+				 ", forward_style=?"
 				 " WHERE in_htlc_id=?"));
 	db_bind_amount_msat(stmt, 0, &in->msat);
 
@@ -4218,7 +4276,12 @@ static bool wallet_forwarded_payment_update(struct wallet *w,
 		db_bind_null(stmt, 4);
 	}
 
-	db_bind_u64(stmt, 5, in->dbid);
+	/* This can happen for malformed onions, reload from db. */
+	if (forward_style == FORWARD_STYLE_UNKNOWN)
+		db_bind_null(stmt, 5);
+	else
+		db_bind_int(stmt, 5, forward_style_in_db(forward_style));
+	db_bind_u64(stmt, 6, in->dbid);
 	db_exec_prepared_v2(stmt);
 	changed = db_count_changes(stmt) != 0;
 	tal_free(stmt);
@@ -4227,6 +4290,7 @@ static bool wallet_forwarded_payment_update(struct wallet *w,
 }
 
 void wallet_forwarded_payment_add(struct wallet *w, const struct htlc_in *in,
+				  enum forward_style forward_style,
 				  const struct short_channel_id *scid_out,
 				  const struct htlc_out *out,
 				  enum forward_status state,
@@ -4242,7 +4306,7 @@ void wallet_forwarded_payment_add(struct wallet *w, const struct htlc_in *in,
 		resolved_time = NULL;
 	}
 
-	if (wallet_forwarded_payment_update(w, in, out, state, failcode, resolved_time))
+	if (wallet_forwarded_payment_update(w, in, out, state, failcode, resolved_time, forward_style))
 		goto notify;
 
 	stmt = db_prepare_v2(w->db,
@@ -4257,7 +4321,8 @@ void wallet_forwarded_payment_add(struct wallet *w, const struct htlc_in *in,
 				 ", received_time"
 				 ", resolved_time"
 				 ", failcode"
-				 ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);"));
+				 ", forward_style"
+				 ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);"));
 	db_bind_u64(stmt, 0, in->dbid);
 
 	if (out) {
@@ -4291,12 +4356,17 @@ void wallet_forwarded_payment_add(struct wallet *w, const struct htlc_in *in,
 	} else {
 		db_bind_null(stmt, 9);
 	}
+	/* This can happen for malformed onions, reload from db! */
+	if (forward_style == FORWARD_STYLE_UNKNOWN)
+		db_bind_null(stmt, 10);
+	else
+		db_bind_int(stmt, 10, forward_style_in_db(forward_style));
 
 	db_exec_prepared_v2(take(stmt));
 
 notify:
 	notify_forward_event(w->ld, in, scid_out, out ? &out->msat : NULL,
-			     state, failcode, resolved_time);
+			     state, failcode, resolved_time, forward_style);
 }
 
 struct amount_msat wallet_total_forward_fees(struct wallet *w)
@@ -4364,6 +4434,7 @@ const struct forwarding *wallet_forwarded_payments_get(struct wallet *w,
 		", f.received_time"
 		", f.resolved_time"
 		", f.failcode "
+		", f.forward_style "
 		"FROM forwarded_payments f "
 		"LEFT JOIN channel_htlcs hin ON (f.in_htlc_id = hin.id) "
 		"WHERE (1 = ? OR f.state = ?) AND "
@@ -4460,6 +4531,12 @@ const struct forwarding *wallet_forwarded_payments_get(struct wallet *w,
 			cur->failcode = db_col_int(stmt, "f.failcode");
 		} else {
 			cur->failcode = 0;
+		}
+		if (db_col_is_null(stmt, "f.forward_style")) {
+			cur->forward_style = FORWARD_STYLE_UNKNOWN;
+		} else {
+			cur->forward_style
+				= forward_style_in_db(db_col_int(stmt, "f.forward_style"));
 		}
 	}
 	tal_free(stmt);
@@ -4657,6 +4734,7 @@ bool wallet_offer_create(struct wallet *w,
 	db_query_prepared(stmt);
 
 	if (db_step(stmt)) {
+		db_col_ignore(stmt, "1");
 		tal_free(stmt);
 		return false;
 	}

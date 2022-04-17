@@ -11,8 +11,8 @@ msgdata,gossipd_init,our_features,feature_set,
 msgdata,gossipd_init,id,node_id,
 msgdata,gossipd_init,rgb,u8,3
 msgdata,gossipd_init,alias,u8,32
-msgdata,gossipd_init,num_announcable,u16,
-msgdata,gossipd_init,announcable,wireaddr,num_announcable
+msgdata,gossipd_init,num_announceable,u16,
+msgdata,gossipd_init,announceable,wireaddr,num_announceable
 msgdata,gossipd_init,dev_gossip_time,?u32,
 msgdata,gossipd_init,dev_fast_gossip,bool,
 msgdata,gossipd_init,dev_fast_gossip_prune,bool,
@@ -26,14 +26,6 @@ msgdata,gossipd_dev_set_time,dev_gossip_time,u32,
 # Set artificial maximum reply_channel_range size.  Master->gossipd
 msgtype,gossipd_dev_set_max_scids_encode_size,3030
 msgdata,gossipd_dev_set_max_scids_encode_size,max,u32,
-
-# Given a short_channel_id, return the latest (stripped) update for error msg.
-msgtype,gossipd_get_stripped_cupdate,3010
-msgdata,gossipd_get_stripped_cupdate,channel_id,short_channel_id,
-
-msgtype,gossipd_get_stripped_cupdate_reply,3110
-msgdata,gossipd_get_stripped_cupdate_reply,stripped_update_len,u16,
-msgdata,gossipd_get_stripped_cupdate_reply,stripped_update,u8,stripped_update_len
 
 # gossipd->master: we're closing this channel.
 msgtype,gossipd_local_channel_close,3027
@@ -54,9 +46,6 @@ msgdata,gossipd_get_txout_reply,outscript,u8,len
 msgtype,gossipd_outpoint_spent,3024
 msgdata,gossipd_outpoint_spent,short_channel_id,short_channel_id,
 
-# master -> gossipd: stop gossip timers.
-msgtype,gossipd_dev_suppress,3032
-
 # master -> gossipd: do you have a memleak?
 msgtype,gossipd_dev_memleak,3033
 
@@ -74,24 +63,8 @@ msgdata,gossipd_dev_compact_store_reply,success,bool,
 msgtype,gossipd_new_blockheight,3026
 msgdata,gossipd_new_blockheight,blockheight,u32,
 
-msgtype,gossipd_got_onionmsg_to_us,3145
-msgdata,gossipd_got_onionmsg_to_us,obs2,bool,
-msgdata,gossipd_got_onionmsg_to_us,node_alias,pubkey,
-msgdata,gossipd_got_onionmsg_to_us,self_id,?secret,
-msgdata,gossipd_got_onionmsg_to_us,reply_blinding,?pubkey,
-msgdata,gossipd_got_onionmsg_to_us,reply_first_node,?pubkey,
-msgdata,gossipd_got_onionmsg_to_us,reply_path_len,u16,
-msgdata,gossipd_got_onionmsg_to_us,reply_path,onionmsg_path,reply_path_len
-msgdata,gossipd_got_onionmsg_to_us,rawmsg_len,u16,
-msgdata,gossipd_got_onionmsg_to_us,rawmsg,u8,rawmsg_len
-
-# Lightningd tells us to send an onion message.
-msgtype,gossipd_send_onionmsg,3041
-msgdata,gossipd_send_onionmsg,obs2,bool,
-msgdata,gossipd_send_onionmsg,id,node_id,
-msgdata,gossipd_send_onionmsg,onion_len,u16,
-msgdata,gossipd_send_onionmsg,onion,u8,onion_len
-msgdata,gossipd_send_onionmsg,blinding,pubkey,
+# gossipd: got it!
+msgtype,gossipd_new_blockheight_reply,3126
 
 # Lightningd tells us to inject a gossip message (for addgossip RPC)
 msgtype,gossipd_addgossip,3044
@@ -105,3 +78,51 @@ msgdata,gossipd_addgossip_reply,err,wirestring,
 # Updated lease rates available
 msgtype,gossipd_new_lease_rates,3046
 msgdata,gossipd_new_lease_rates,rates,lease_rates,
+
+# Lightningd asks gossipd for any known addresses for that node.
+msgtype,gossipd_get_addrs,3050
+msgdata,gossipd_get_addrs,id,node_id,
+
+msgtype,gossipd_get_addrs_reply,3150
+msgdata,gossipd_get_addrs_reply,num,u16,
+msgdata,gossipd_get_addrs_reply,addrs,wireaddr,num
+
+# Tell master a local channel update (so it can serve errors).
+msgtype,gossipd_got_local_channel_update,3151
+msgdata,gossipd_got_local_channel_update,scid,short_channel_id,
+msgdata,gossipd_got_local_channel_update,len,u16,
+msgdata,gossipd_got_local_channel_update,channel_update,u8,len
+
+# Send this channel_update.
+msgtype,gossipd_local_channel_update,3004
+msgdata,gossipd_local_channel_update,id,node_id,
+msgdata,gossipd_local_channel_update,short_channel_id,short_channel_id,
+msgdata,gossipd_local_channel_update,disable,bool,
+msgdata,gossipd_local_channel_update,cltv_expiry_delta,u16,
+msgdata,gossipd_local_channel_update,htlc_minimum_msat,amount_msat,
+msgdata,gossipd_local_channel_update,fee_base_msat,u32,
+msgdata,gossipd_local_channel_update,fee_proportional_millionths,u32,
+msgdata,gossipd_local_channel_update,htlc_maximum_msat,amount_msat,
+
+# Send this channel_announcement
+msgtype,gossipd_local_channel_announcement,3006
+msgdata,gossipd_local_channel_announcement,id,node_id,
+msgdata,gossipd_local_channel_announcement,len,u16,
+msgdata,gossipd_local_channel_announcement,cannounce,u8,len
+
+# Tell gossipd about a private channel (to put it in the store)
+# cannounce has same structure, dummy sigs.
+msgtype,gossipd_local_private_channel,3008
+msgdata,gossipd_local_private_channel,id,node_id,
+msgdata,gossipd_local_private_channel,capacity,amount_sat,
+msgdata,gossipd_local_private_channel,scid,short_channel_id,
+msgdata,gossipd_local_private_channel,len,u16,
+msgdata,gossipd_local_private_channel,features,u8,len
+
+# Tell gossipd we used the channel update (in case it was deferred)
+msgtype,gossipd_used_local_channel_update,3052
+msgdata,gossipd_used_local_channel_update,scid,short_channel_id,
+
+# Tell gossipd we have discovered a new remote_addr
+msgtype,gossipd_remote_addr,3009
+msgdata,gossipd_remote_addr,remote_addr,wireaddr,

@@ -1,10 +1,12 @@
 #include "config.h"
+#include "config_test.h"
 #include <common/amount.h>
 #include <common/bigsize.h>
 #include <common/channel_id.h>
 #include <common/json_stream.h>
 #include <common/node_id.h>
 #include <common/setup.h>
+#include <common/wireaddr.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <sys/socket.h>
@@ -20,7 +22,7 @@ int test_fputc(int c, FILE *stream);
 int test_chdir(const char *path);
 
 #define main test_main
-#define read test_read
+#define cli_read test_read
 #define socket test_socket
 #define connect test_connect
 #define getpid test_getpid
@@ -73,12 +75,15 @@ struct amount_sat fromwire_amount_sat(const u8 **cursor UNNEEDED, size_t *max UN
 bigsize_t fromwire_bigsize(const u8 **cursor UNNEEDED, size_t *max UNNEEDED)
 { fprintf(stderr, "fromwire_bigsize called!\n"); abort(); }
 /* Generated stub for fromwire_channel_id */
-void fromwire_channel_id(const u8 **cursor UNNEEDED, size_t *max UNNEEDED,
+bool fromwire_channel_id(const u8 **cursor UNNEEDED, size_t *max UNNEEDED,
 			 struct channel_id *channel_id UNNEEDED)
 { fprintf(stderr, "fromwire_channel_id called!\n"); abort(); }
 /* Generated stub for fromwire_node_id */
 void fromwire_node_id(const u8 **cursor UNNEEDED, size_t *max UNNEEDED, struct node_id *id UNNEEDED)
 { fprintf(stderr, "fromwire_node_id called!\n"); abort(); }
+/* Generated stub for fromwire_wireaddr */
+bool fromwire_wireaddr(const u8 **cursor UNNEEDED, size_t *max UNNEEDED, struct wireaddr *addr UNNEEDED)
+{ fprintf(stderr, "fromwire_wireaddr called!\n"); abort(); }
 /* Generated stub for json_add_member */
 void json_add_member(struct json_stream *js UNNEEDED,
 		     const char *fieldname UNNEEDED,
@@ -111,6 +116,9 @@ void towire_channel_id(u8 **pptr UNNEEDED, const struct channel_id *channel_id U
 /* Generated stub for towire_node_id */
 void towire_node_id(u8 **pptr UNNEEDED, const struct node_id *id UNNEEDED)
 { fprintf(stderr, "towire_node_id called!\n"); abort(); }
+/* Generated stub for towire_wireaddr */
+void towire_wireaddr(u8 **pptr UNNEEDED, const struct wireaddr *addr UNNEEDED)
+{ fprintf(stderr, "towire_wireaddr called!\n"); abort(); }
 /* Generated stub for version_and_exit */
 char *version_and_exit(const void *unused UNNEEDED)
 { fprintf(stderr, "version_and_exit called!\n"); abort(); }

@@ -242,11 +242,10 @@ const u8 *handle_query_short_channel_ids(struct peer *peer, const u8 *msg)
 	u8 *encoded;
 	struct short_channel_id *scids;
 	bigsize_t *flags;
-	struct tlv_query_short_channel_ids_tlvs *tlvs
-		= tlv_query_short_channel_ids_tlvs_new(tmpctx);
+	struct tlv_query_short_channel_ids_tlvs *tlvs;
 
 	if (!fromwire_query_short_channel_ids(tmpctx, msg, &chain, &encoded,
-					      tlvs)) {
+					      &tlvs)) {
 		return towire_warningfmt(peer, NULL,
 					 "Bad query_short_channel_ids w/tlvs %s",
 					 tal_hex(tmpctx, msg));
@@ -259,7 +258,8 @@ const u8 *handle_query_short_channel_ids(struct peer *peer, const u8 *msg)
 		 *  - if the incoming message includes
 		 *    `query_short_channel_ids_tlvs`:
 		 *    - if `encoding_type` is not a known encoding type:
-		 *      - MAY fail the connection
+		 *      - MAY send a `warning`.
+		 *      - MAY close the connection.
 		 */
 		flags = decode_scid_query_flags(tmpctx, tlvs->query_flags);
 		if (!flags) {
@@ -289,7 +289,8 @@ const u8 *handle_query_short_channel_ids(struct peer *peer, const u8 *msg)
 	 * - if it has not sent `reply_short_channel_ids_end` to a
 	 *   previously received `query_short_channel_ids` from this
 	 *   sender:
-	 *    - MAY fail the connection.
+	 *    - MAY send a `warning`.
+	 *    - MAY close the connection.
 	 */
 	if (peer->scid_queries || peer->scid_query_nodes) {
 		return towire_warningfmt(peer, NULL,
@@ -309,7 +310,8 @@ const u8 *handle_query_short_channel_ids(struct peer *peer, const u8 *msg)
 	 *...
 	 *    - if `encoded_query_flags` does not decode to exactly one flag per
 	 *      `short_channel_id`:
-	 *      - MAY fail the connection.
+	 *     - MAY send a `warning`.
+	 *     - MAY close the connection.
 	 */
 	if (!flags) {
 		/* Pretend they asked for everything. */
@@ -335,8 +337,8 @@ const u8 *handle_query_short_channel_ids(struct peer *peer, const u8 *msg)
 	peer->scid_query_idx = 0;
 	peer->scid_query_nodes = tal_arr(peer, struct node_id, 0);
 
-	/* Notify the daemon_conn-write loop to invoke create_next_scid_reply */
-	daemon_conn_wake(peer->dc);
+	/* Notify the daemon_conn-write loop to invoke maybe_send_query_responses_peer */
+	daemon_conn_wake(peer->daemon->connectd);
 	return NULL;
 }
 
@@ -645,12 +647,11 @@ const u8 *handle_query_channel_range(struct peer *peer, const u8 *msg)
 	struct bitcoin_blkid chain_hash;
 	u32 first_blocknum, number_of_blocks;
 	enum query_option_flags query_option_flags;
-	struct tlv_query_channel_range_tlvs *tlvs
-		= tlv_query_channel_range_tlvs_new(msg);
+	struct tlv_query_channel_range_tlvs *tlvs;
 
-	if (!fromwire_query_channel_range(msg, &chain_hash,
+	if (!fromwire_query_channel_range(msg, msg, &chain_hash,
 					  &first_blocknum, &number_of_blocks,
-					  tlvs)) {
+					  &tlvs)) {
 		return towire_warningfmt(peer, NULL,
 					 "Bad query_channel_range w/tlvs %s",
 					 tal_hex(tmpctx, msg));
@@ -741,12 +742,11 @@ const u8 *handle_reply_channel_range(struct peer *peer, const u8 *msg)
 	void (*cb)(struct peer *peer,
 		   u32 first_blocknum, u32 number_of_blocks,
 		   const struct range_query_reply *replies);
-	struct tlv_reply_channel_range_tlvs *tlvs
-		= tlv_reply_channel_range_tlvs_new(tmpctx);
+	struct tlv_reply_channel_range_tlvs *tlvs;
 
 	if (!fromwire_reply_channel_range(tmpctx, msg, &chain, &first_blocknum,
 					  &number_of_blocks, &sync_complete,
-					  &encoded, tlvs)) {
+					  &encoded, &tlvs)) {
 		return towire_warningfmt(peer, NULL,
 					 "Bad reply_channel_range w/tlvs %s",
 					 tal_hex(tmpctx, msg));
@@ -985,7 +985,7 @@ static void uniquify_node_ids(struct node_id **ids)
 /* We are fairly careful to avoid the peer DoSing us with channel queries:
  * this routine sends information about a single short_channel_id, unless
  * it's finished all of them. */
-void maybe_send_query_responses(struct peer *peer)
+static bool maybe_send_query_responses_peer(struct peer *peer)
 {
 	struct routing_state *rstate = peer->daemon->rstate;
 	size_t i, num;
@@ -1119,6 +1119,22 @@ void maybe_send_query_responses(struct peer *peer)
 		peer->scid_query_nodes = tal_free(peer->scid_query_nodes);
 		peer->scid_query_nodes_idx = 0;
 	}
+	return sent;
+}
+
+void maybe_send_query_responses(struct daemon *daemon)
+{
+	/* Rotate through, so we don't favor a single peer. */
+	struct list_head used;
+	struct peer *p;
+
+	list_head_init(&used);
+	while ((p = list_pop(&daemon->peers, struct peer, list)) != NULL) {
+		list_add(&used, &p->list);
+		if (maybe_send_query_responses_peer(p))
+			break;
+	}
+	list_append_list(&daemon->peers, &used);
 }
 
 bool query_channel_range(struct daemon *daemon,
@@ -1163,15 +1179,12 @@ bool query_channel_range(struct daemon *daemon,
 #if DEVELOPER
 /* This is a testing hack to allow us to artificially lower the maximum bytes
  * of short_channel_ids we'll encode, using dev_set_max_scids_encode_size. */
-struct io_plan *dev_set_max_scids_encode_size(struct io_conn *conn,
-					      struct daemon *daemon,
-					      const u8 *msg)
+void dev_set_max_scids_encode_size(struct daemon *daemon, const u8 *msg)
 {
 	if (!fromwire_gossipd_dev_set_max_scids_encode_size(msg,
 							   &dev_max_encoding_bytes))
 		master_badmsg(WIRE_GOSSIPD_DEV_SET_MAX_SCIDS_ENCODE_SIZE, msg);
 
 	status_debug("Set max_scids_encode_bytes to %u", dev_max_encoding_bytes);
-	return daemon_conn_read_next(conn, daemon->master);
 }
 #endif /* DEVELOPER */

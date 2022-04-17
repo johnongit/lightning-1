@@ -1,21 +1,30 @@
 #include "config.h"
+#include <ccan/tal/str/str.h>
+#include <common/errcode.h>
 #include <common/hsm_encryption.h>
+#include <errno.h>
 #include <termios.h>
 #include <unistd.h>
 
-char *hsm_secret_encryption_key(const char *pass, struct secret *key)
+int hsm_secret_encryption_key_with_exitcode(const char *pass, struct secret *key,
+					      char **err_msg)
 {
 	u8 salt[16] = "c-lightning\0\0\0\0\0";
 
 	/* Don't swap the encryption key ! */
-	if (sodium_mlock(key->data, sizeof(key->data)) != 0)
-		return "Could not lock hsm_secret encryption key memory.";
+	if (sodium_mlock(key->data, sizeof(key->data)) != 0) {
+		*err_msg = "Could not lock hsm_secret encryption key memory.";
+		return HSM_GENERIC_ERROR;
+	}
 
 	/* Check bounds. */
-	if (strlen(pass) < crypto_pwhash_argon2id_PASSWD_MIN)
-		return "Password too short to be able to derive a key from it.";
-	if (strlen(pass) > crypto_pwhash_argon2id_PASSWD_MAX)
-		return "Password too long to be able to derive a key from it.";
+	if (strlen(pass) < crypto_pwhash_argon2id_PASSWD_MIN) {
+		*err_msg = "Password too short to be able to derive a key from it.";
+		return HSM_BAD_PASSWORD;
+	} else if (strlen(pass) > crypto_pwhash_argon2id_PASSWD_MAX) {
+		*err_msg = "Password too long to be able to derive a key from it.";
+		return HSM_BAD_PASSWORD;
+	}
 
 	/* Now derive the key. */
 	if (crypto_pwhash(key->data, sizeof(key->data), pass, strlen(pass), salt,
@@ -23,10 +32,12 @@ char *hsm_secret_encryption_key(const char *pass, struct secret *key)
 			   * and SENSITIVE needs 1024. */
 			  crypto_pwhash_argon2id_OPSLIMIT_MODERATE,
 			  crypto_pwhash_argon2id_MEMLIMIT_MODERATE,
-			  crypto_pwhash_ALG_ARGON2ID13) != 0)
-		return "Could not derive a key from the password.";
+			  crypto_pwhash_ALG_ARGON2ID13) != 0) {
+		*err_msg = "Could not derive a key from the password.";
+		return HSM_BAD_PASSWORD;
+	}
 
-	return NULL;
+	return 0;
 }
 
 bool encrypt_hsm_secret(const struct secret *encryption_key,
@@ -70,6 +81,17 @@ bool decrypt_hsm_secret(const struct secret *encryption_key,
 	return true;
 }
 
+/* Returns -1 on error (and sets errno), 0 if not encrypted, 1 if it is */
+int is_hsm_secret_encrypted(const char *path)
+{
+	struct stat st;
+
+        if (stat(path, &st) != 0)
+		return -1;
+
+        return st.st_size == ENCRYPTED_HSM_SECRET_LEN;
+}
+
 void discard_key(struct secret *key TAKES)
 {
 	/* sodium_munlock() also zeroes the memory. */
@@ -90,7 +112,7 @@ static bool getline_stdin_pass(char **passwd, size_t *passwd_size)
 	return true;
 }
 
-char *read_stdin_pass(char **reason)
+char *read_stdin_pass_with_exit_code(char **reason, int *exit_code)
 {
 	struct termios current_term, temp_term;
 	char *passwd = NULL;
@@ -100,17 +122,20 @@ char *read_stdin_pass(char **reason)
 		/* Set a temporary term, same as current but with ECHO disabled. */
 		if (tcgetattr(fileno(stdin), &current_term) != 0) {
 			*reason = "Could not get current terminal options.";
+			*exit_code = HSM_PASSWORD_INPUT_ERR;
 			return NULL;
 		}
 		temp_term = current_term;
 		temp_term.c_lflag &= ~ECHO;
 		if (tcsetattr(fileno(stdin), TCSANOW, &temp_term) != 0) {
 			*reason = "Could not disable pass echoing.";
+			*exit_code = HSM_PASSWORD_INPUT_ERR;
 			return NULL;
 		}
 
 		if (!getline_stdin_pass(&passwd, &passwd_size)) {
 			*reason = "Could not read pass from stdin.";
+			*exit_code = HSM_PASSWORD_INPUT_ERR;
 			return NULL;
 		}
 
@@ -118,12 +143,13 @@ char *read_stdin_pass(char **reason)
 		if (tcsetattr(fileno(stdin), TCSANOW, &current_term) != 0) {
 			*reason = "Could not restore terminal options.";
 			free(passwd);
+			*exit_code = HSM_PASSWORD_INPUT_ERR;
 			return NULL;
 		}
 	} else if (!getline_stdin_pass(&passwd, &passwd_size)) {
 		*reason = "Could not read pass from stdin.";
+		*exit_code = HSM_PASSWORD_INPUT_ERR;
 		return NULL;
 	}
-
 	return passwd;
 }

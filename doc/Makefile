@@ -65,6 +65,7 @@ MANPAGES := doc/lightning-cli.1 \
 	doc/lightning-sendonion.7 \
 	doc/lightning-sendonionmessage.7 \
 	doc/lightning-sendpay.7 \
+	doc/lightning-setchannel.7 \
 	doc/lightning-setchannelfee.7 \
 	doc/lightning-sendcustommsg.7 \
 	doc/lightning-signmessage.7 \
@@ -89,15 +90,19 @@ MANPAGES := doc/lightning-cli.1 \
 	doc/lightning-help.7 \
 	doc/lightning-getlog.7
 
-doc-all: fmt-schema $(MANPAGES) doc/index.rst
+doc-all: $(MANPAGES) doc/index.rst
 
-#FIXME(vincenzopalazzo) we don't need to change a file if it is well format,
-#so we can use diff to check difference in the real json and in the .fmt
-fmt-schema:
-	@echo "Checking schema fmt!"
-	@for f in $$(find doc/schemas -type f -name '*.json'); do cat "$$f" | jq . > "$$f.fmt" ; mv "$$f.fmt" "$$f" ; done
+SCHEMAS := $(wildcard doc/schemas/*.json)
+check-fmt-schemas: $(SCHEMAS:%=check-fmt-schema/%)
+fmt-schemas: $(SCHEMAS:%=fmt-schema/%)
 
-check-doc: check-config-docs check-manpages
+check-fmt-schema/%: %
+	@jq . < "$*" > "$*".fmt && diff -u "$*" "$*.fmt" && rm "$*.fmt"
+
+fmt-schema/%: %
+	@jq . < "$*" > "$*".fmt && cat "$*".fmt > "$*" && rm "$*.fmt"
+
+check-doc: check-config-docs check-manpages check-fmt-schemas
 
 # Some manpages use a schema, so need that added.
 MARKDOWN_WITH_SCHEMA := $(shell grep -l GENERATE-FROM-SCHEMA $(MANPAGES:=.md))
@@ -150,7 +155,7 @@ clean: doc-clean
 check: check-manpages
 
 # This needs plugins, too.
-check-manpages: all-programs check-config-docs
+check-manpages: all-programs check-config-docs default-targets
 	@tools/check-manpage.sh cli/lightning-cli doc/lightning-cli.1.md
 	@tools/check-manpage.sh "lightningd/lightningd --lightning-dir=/tmp/" doc/lightningd-config.5.md
 

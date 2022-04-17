@@ -33,12 +33,6 @@ bool cupdate_different(struct gossip_store *gs UNNEEDED,
 /* Generated stub for ecdh */
 void ecdh(const struct pubkey *point UNNEEDED, struct secret *ss UNNEEDED)
 { fprintf(stderr, "ecdh called!\n"); abort(); }
-/* Generated stub for fmt_wireaddr_without_port */
-char *fmt_wireaddr_without_port(const tal_t *ctx UNNEEDED, const struct wireaddr *a UNNEEDED)
-{ fprintf(stderr, "fmt_wireaddr_without_port called!\n"); abort(); }
-/* Generated stub for fromwire_wireaddr_array */
-struct wireaddr *fromwire_wireaddr_array(const tal_t *ctx UNNEEDED, const u8 *ser UNNEEDED)
-{ fprintf(stderr, "fromwire_wireaddr_array called!\n"); abort(); }
 /* Generated stub for gossip_store_add */
 u64 gossip_store_add(struct gossip_store *gs UNNEEDED, const u8 *gossip_msg UNNEEDED,
 		     u32 timestamp UNNEEDED, bool push UNNEEDED, const u8 *addendum UNNEEDED)
@@ -109,6 +103,10 @@ void peer_supplied_good_gossip(struct peer *peer UNNEEDED, size_t amount UNNEEDE
 char *sanitize_error(const tal_t *ctx UNNEEDED, const u8 *errmsg UNNEEDED,
 		     struct channel_id *channel_id UNNEEDED)
 { fprintf(stderr, "sanitize_error called!\n"); abort(); }
+/* Generated stub for status_failed */
+void status_failed(enum status_failreason code UNNEEDED,
+		   const char *fmt UNNEEDED, ...)
+{ fprintf(stderr, "status_failed called!\n"); abort(); }
 /* Generated stub for status_fmt */
 void status_fmt(enum log_level level UNNEEDED,
 		const struct node_id *peer UNNEEDED,
@@ -162,7 +160,7 @@ int main(int argc, char *argv[])
 	t = timers_expire(&timers, timemono_add(time_mono(),
 						time_from_sec(3601)));
 	assert(t);
-	timer_expired(NULL, t);
+	timer_expired(t);
 
 	/* Still there, just old.  Refresh scid1 */
 	assert(rstate->num_txout_failures == 0);
@@ -172,7 +170,7 @@ int main(int argc, char *argv[])
 	t = timers_expire(&timers, timemono_add(time_mono(),
 						time_from_sec(3601)));
 	assert(t);
-	timer_expired(NULL, t);
+	timer_expired(t);
 
 	assert(rstate->num_txout_failures == 0);
 	assert(in_txout_failures(rstate, &scid1));

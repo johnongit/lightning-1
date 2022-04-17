@@ -10,18 +10,17 @@
 #include <common/configdir.h>
 #include <common/derive_basepoints.h>
 #include <common/descriptor_checksum.h>
+#include <common/errcode.h>
 #include <common/hsm_encryption.h>
 #include <common/node_id.h>
 #include <common/type_to_string.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
-#include <sys/stat.h>
 #include <unistd.h>
 #include <wally_bip32.h>
 #include <wally_bip39.h>
 
-#define ERROR_HSM_FILE errno
 #define ERROR_USAGE 2
 #define ERROR_LIBSODIUM 3
 #define ERROR_LIBWALLY 4
@@ -90,6 +89,7 @@ static void get_encrypted_hsm_secret(struct secret *hsm_secret,
 	struct secret key;
 	struct encrypted_hsm_secret encrypted_secret;
 	char *err;
+	int exit_code = 0;
 
 	fd = open(hsm_secret_path, O_RDONLY);
 	if (fd < 0)
@@ -98,9 +98,9 @@ static void get_encrypted_hsm_secret(struct secret *hsm_secret,
 	if (!read_all(fd, encrypted_secret.data, ENCRYPTED_HSM_SECRET_LEN))
 		errx(ERROR_HSM_FILE, "Could not read encrypted hsm_secret");
 
-	err = hsm_secret_encryption_key(passwd, &key);
-	if (err)
-		errx(ERROR_LIBSODIUM, "%s", err);
+	exit_code = hsm_secret_encryption_key_with_exitcode(passwd, &key, &err);
+	if (exit_code > 0)
+		errx(exit_code, "%s", err);
 	if (!decrypt_hsm_secret(&key, &encrypted_secret, hsm_secret))
 		errx(ERROR_LIBSODIUM, "Could not retrieve the seed. Wrong password ?");
 
@@ -146,16 +146,24 @@ static void get_channel_seed(struct secret *channel_seed, struct node_id *peer_i
 /* We detect an encrypted hsm_secret as a hsm_secret which is 73-bytes long. */
 static bool hsm_secret_is_encrypted(const char *hsm_secret_path)
 {
-	struct stat st;
+        switch (is_hsm_secret_encrypted(hsm_secret_path)) {
+		case -1:
+			err(ERROR_HSM_FILE, "Cannot open '%s'", hsm_secret_path);
+		case 1:
+			return true;
+	        case 0: {
+			/* Extra sanity check on HSM file! */
+			struct stat st;
+			stat(hsm_secret_path, &st);
+			if (st.st_size != 32)
+				errx(ERROR_HSM_FILE,
+				     "Invalid hsm_secret '%s' (neither plaintext "
+				     "nor encrypted).", hsm_secret_path);
+			return false;
+		}
+	}
 
-	if (stat(hsm_secret_path, &st) != 0)
-		errx(ERROR_HSM_FILE, "Could not stat hsm_secret");
-
-	if (st.st_size != 32 && st.st_size != ENCRYPTED_HSM_SECRET_LEN)
-		errx(ERROR_HSM_FILE, "Invalid hsm_secret (neither plaintext "
-				     "nor encrypted).");
-
-	return st.st_size == ENCRYPTED_HSM_SECRET_LEN;
+	abort();
 }
 
 static int decrypt_hsm(const char *hsm_secret_path)
@@ -164,15 +172,15 @@ static int decrypt_hsm(const char *hsm_secret_path)
 	struct secret hsm_secret;
 	char *passwd, *err;
 	const char *dir, *backup;
-
+	int exit_code = 0;
 	/* This checks the file existence, too. */
 	if (!hsm_secret_is_encrypted(hsm_secret_path))
 		errx(ERROR_USAGE, "hsm_secret is not encrypted");
 	printf("Enter hsm_secret password:\n");
 	fflush(stdout);
-	passwd = read_stdin_pass(&err);
+	passwd = read_stdin_pass_with_exit_code(&err, &exit_code);
 	if (!passwd)
-		errx(ERROR_TERM, "%s", err);
+		errx(exit_code, "%s", err);
 
 	if (sodium_init() == -1)
 		errx(ERROR_LIBSODIUM,
@@ -221,6 +229,7 @@ static int encrypt_hsm(const char *hsm_secret_path)
 	struct encrypted_hsm_secret encrypted_hsm_secret;
 	char *passwd, *passwd_confirmation, *err;
 	const char *dir, *backup;
+	int exit_code = 0;
 
 	/* This checks the file existence, too. */
 	if (hsm_secret_is_encrypted(hsm_secret_path))
@@ -228,14 +237,14 @@ static int encrypt_hsm(const char *hsm_secret_path)
 
 	printf("Enter hsm_secret password:\n");
 	fflush(stdout);
-	passwd = read_stdin_pass(&err);
+	passwd = read_stdin_pass_with_exit_code(&err, &exit_code);
 	if (!passwd)
-		errx(ERROR_TERM, "%s", err);
+		errx(exit_code, "%s", err);
 	printf("Confirm hsm_secret password:\n");
 	fflush(stdout);
-	passwd_confirmation = read_stdin_pass(&err);
+	passwd_confirmation = read_stdin_pass_with_exit_code(&err, &exit_code);
 	if (!passwd_confirmation)
-		errx(ERROR_TERM, "%s", err);
+		errx(exit_code, "%s", err);
 	if (!streq(passwd, passwd_confirmation))
 		errx(ERROR_USAGE, "Passwords confirmation mismatch.");
 	get_hsm_secret(&hsm_secret, hsm_secret_path);
@@ -249,9 +258,9 @@ static int encrypt_hsm(const char *hsm_secret_path)
 
 	/* Derive the encryption key from the password provided, and try to encrypt
 	 * the seed. */
-	err = hsm_secret_encryption_key(passwd, &key);
-	if (err)
-		errx(ERROR_LIBSODIUM, "%s", err);
+        exit_code = hsm_secret_encryption_key_with_exitcode(passwd, &key, &err);
+	if (exit_code > 0)
+		errx(exit_code, "%s", err);
 	if (!encrypt_hsm_secret(&key, &hsm_secret, &encrypted_hsm_secret))
 		errx(ERROR_LIBSODIUM, "Could not encrypt the hsm_secret seed.");
 
@@ -295,6 +304,7 @@ static int dump_commitments_infos(struct node_id *node_id, u64 channel_id,
 	struct secret hsm_secret, channel_seed, per_commitment_secret;
 	struct pubkey per_commitment_point;
 	char *passwd, *err;
+	int exit_code = 0;
 
 	secp256k1_ctx = secp256k1_context_create(SECP256K1_CONTEXT_VERIFY
 	                                         | SECP256K1_CONTEXT_SIGN);
@@ -303,9 +313,9 @@ static int dump_commitments_infos(struct node_id *node_id, u64 channel_id,
 	if (hsm_secret_is_encrypted(hsm_secret_path)) {
 		printf("Enter hsm_secret password:\n");
 		fflush(stdout);
-		passwd = read_stdin_pass(&err);
+		passwd = read_stdin_pass_with_exit_code(&err, &exit_code);
 		if (!passwd)
-			errx(ERROR_TERM, "%s", err);
+			errx(exit_code, "%s", err);
 		get_encrypted_hsm_secret(&hsm_secret, hsm_secret_path, passwd);
 		free(passwd);
 	} else
@@ -357,7 +367,7 @@ static int guess_to_remote(const char *address, struct node_id *node_id,
 	u8 goal_pubkeyhash[20];
 	/* See common/bech32.h for buffer size. */
 	char hrp[strlen(address) - 6];
-	int witver;
+	int witver, exit_code = 0;
 	size_t witlen;
 
 	/* Get the hrp to accept addresses from any network. */
@@ -373,9 +383,9 @@ static int guess_to_remote(const char *address, struct node_id *node_id,
 	if (hsm_secret_is_encrypted(hsm_secret_path)) {
 		printf("Enter hsm_secret password:\n");
 		fflush(stdout);
-		passwd = read_stdin_pass(&err);
+		passwd = read_stdin_pass_with_exit_code(&err, &exit_code);
 		if (!passwd)
-			errx(ERROR_TERM, "%s", err);
+			errx(exit_code, "%s", err);
 		get_encrypted_hsm_secret(&hsm_secret, hsm_secret_path, passwd);
 		free(passwd);
 	} else
@@ -478,6 +488,7 @@ static int generate_hsm(const char *hsm_secret_path)
 {
 	char mnemonic[BIP39_WORDLIST_LEN];
 	char *passphrase, *err;
+	int exit_code = 0;
 
 	read_mnemonic(mnemonic);
 	printf("Warning: remember that different passphrases yield different "
@@ -485,9 +496,9 @@ static int generate_hsm(const char *hsm_secret_path)
 	printf("If left empty, no password is used (echo is disabled).\n");
 	printf("Enter your passphrase: \n");
 	fflush(stdout);
-	passphrase = read_stdin_pass(&err);
+	passphrase = read_stdin_pass_with_exit_code(&err, &exit_code);
 	if (!passphrase)
-		errx(ERROR_TERM, "%s", err);
+		errx(exit_code, "%s", err);
 	if (strlen(passphrase) == 0) {
 		free(passphrase);
 		passphrase = NULL;
@@ -534,14 +545,15 @@ static int dumponchaindescriptors(const char *hsm_secret_path, const char *old_p
 	struct ext_key master_extkey;
 	char *enc_xpub, *descriptor;
 	struct descriptor_checksum checksum;
+	int exit_code = 0;
 
 	/* This checks the file existence, too. */
 	if (hsm_secret_is_encrypted(hsm_secret_path)) {
 		printf("Enter hsm_secret password:\n");
 		fflush(stdout);
-		passwd = read_stdin_pass(&err);
+		passwd = read_stdin_pass_with_exit_code(&err, &exit_code);
 		if (!passwd)
-			errx(ERROR_TERM, "%s", err);
+			errx(exit_code, "%s", err);
 		get_encrypted_hsm_secret(&hsm_secret, hsm_secret_path, passwd);
 		free(passwd);
 	} else

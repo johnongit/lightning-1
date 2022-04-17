@@ -5,7 +5,8 @@
 #include <ccan/short_types/short_types.h>
 #include <ccan/tal/tal.h>
 
-struct per_peer_state;
+struct gossip_state;
+struct gossip_rcvd_filter;
 
 /**
  * gossip_store -- On-disk storage related information
@@ -38,15 +39,20 @@ struct gossip_hdr {
 /**
  * Direct store accessor: loads gossip msg from store.
  *
- * Returns NULL and resets time_to_next_gossip(pps) if there are no
- * more gossip msgs.
+ * Returns NULL if there are no more gossip msgs.
+ * Updates *end if the known end of file has moved.
+ * Updates *gossip_store_fd if file has been compacted.
  */
-u8 *gossip_store_next(const tal_t *ctx, struct per_peer_state *pps);
+u8 *gossip_store_next(const tal_t *ctx,
+		      int *gossip_store_fd,
+		      u32 timestamp_min, u32 timestamp_max,
+		      size_t *off, size_t *end);
 
 /**
- * Sets up the tiemstamp filter once they told us to set it.(
+ * Gossipd will be writing to this, and it's not atomic!  Safest
+ * way to find the "end" is to walk through.
+ * @old_end: 1 if no previous end.
  */
-void gossip_setup_timestamp_filter(struct per_peer_state *pps,
-				   u32 first_timestamp,
-				   u32 timestamp_range);
+size_t find_gossip_store_end(int gossip_store_fd, size_t old_end);
+
 #endif /* LIGHTNING_COMMON_GOSSIP_STORE_H */

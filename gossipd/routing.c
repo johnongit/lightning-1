@@ -33,10 +33,10 @@ struct pending_node_announce {
 	struct peer *peer_softref;
 };
 
-/* We consider a reasonable gossip rate to be 1 per day, with burst of
+/* We consider a reasonable gossip rate to be 2 per day, with burst of
  * 4 per day.  So we use a granularity of one hour. */
-#define TOKENS_PER_MSG 24
-#define TOKEN_MAX (24 * 4)
+#define TOKENS_PER_MSG 12
+#define TOKEN_MAX (12 * 4)
 
 static u8 update_tokens(const struct routing_state *rstate,
 			u8 tokens, u32 prev_timestamp, u32 new_timestamp)
@@ -198,7 +198,6 @@ static void destroy_routing_state(struct routing_state *rstate)
 
 	/* Free up our htables */
 	pending_cannouncement_map_clear(&rstate->pending_cannouncements);
-	local_chan_map_clear(&rstate->local_chan_map);
 }
 
 /* We don't check this when loading from the gossip_store: that would break
@@ -226,7 +225,6 @@ static void memleak_help_routing_tables(struct htable *memtable,
 	memleak_remove_htable(memtable, &rstate->nodes->raw);
 	memleak_remove_htable(memtable, &rstate->pending_node_map->raw);
 	memleak_remove_htable(memtable, &rstate->pending_cannouncements.raw);
-	memleak_remove_htable(memtable, &rstate->local_chan_map.raw);
 	memleak_remove_uintmap(memtable, &rstate->unupdated_chanmap);
 
 	for (n = node_map_first(rstate->nodes, &nit);
@@ -295,7 +293,6 @@ struct routing_state *new_routing_state(const tal_t *ctx,
 
 	uintmap_init(&rstate->chanmap);
 	uintmap_init(&rstate->unupdated_chanmap);
-	local_chan_map_init(&rstate->local_chan_map);
 	rstate->num_txout_failures = 0;
 	uintmap_init(&rstate->txout_failures);
 	uintmap_init(&rstate->txout_failures_old);
@@ -424,6 +421,25 @@ static bool node_announce_predates_channels(const struct node *node)
 	return true;
 }
 
+/* Move this node's announcement to the tail of the gossip_store, to
+ * make everyone send it again. */
+void force_node_announce_rexmit(struct routing_state *rstate,
+				struct node *node)
+{
+	const u8 *announce;
+	bool is_local = node_id_eq(&node->id, &rstate->local_id);
+	announce = gossip_store_get(tmpctx, rstate->gs, node->bcast.index);
+
+	gossip_store_delete(rstate->gs,
+			    &node->bcast,
+			    WIRE_NODE_ANNOUNCEMENT);
+	node->bcast.index = gossip_store_add(rstate->gs,
+					     announce,
+					     node->bcast.timestamp,
+					     is_local,
+					     NULL);
+}
+
 static void remove_chan_from_node(struct routing_state *rstate,
 				  struct node *node, const struct chan *chan)
 {
@@ -461,23 +477,11 @@ static void remove_chan_from_node(struct routing_state *rstate,
 				    &node->bcast,
 				    WIRE_NODE_ANNOUNCEMENT);
 	} else if (node_announce_predates_channels(node)) {
-		const u8 *announce;
-
-		announce = gossip_store_get(tmpctx, rstate->gs,
-					    node->bcast.index);
-
 		/* node announcement predates all channel announcements?
 		 * Move to end (we could, in theory, move to just past next
 		 * channel_announce, but we don't care that much about spurious
 		 * retransmissions in this corner case */
-		gossip_store_delete(rstate->gs,
-				    &node->bcast,
-				    WIRE_NODE_ANNOUNCEMENT);
-		node->bcast.index = gossip_store_add(rstate->gs,
-						     announce,
-						     node->bcast.timestamp,
-						     false,
-						     NULL);
+		force_node_announce_rexmit(rstate, node);
 	}
 }
 
@@ -524,36 +528,6 @@ static void bad_gossip_order(const u8 *msg,
 			  details);
 }
 
-static void destroy_local_chan(struct local_chan *local_chan,
-			       struct routing_state *rstate)
-{
-	if (!local_chan_map_del(&rstate->local_chan_map, local_chan))
-		abort();
-}
-
-static void maybe_add_local_chan(struct routing_state *rstate,
-				 struct chan *chan)
-{
-	int direction;
-	struct local_chan *local_chan;
-
-	if (node_id_eq(&chan->nodes[0]->id, &rstate->local_id))
-		direction = 0;
-	else if (node_id_eq(&chan->nodes[1]->id, &rstate->local_id))
-		direction = 1;
-	else
-		return;
-
-	local_chan = tal(chan, struct local_chan);
-	local_chan->chan = chan;
-	local_chan->direction = direction;
-	local_chan->local_disabled = false;
-	local_chan->channel_update_timer = NULL;
-
-	local_chan_map_add(&rstate->local_chan_map, local_chan);
-	tal_add_destructor2(local_chan, destroy_local_chan, rstate);
-}
-
 struct chan *new_chan(struct routing_state *rstate,
 		      const struct short_channel_id *scid,
 		      const struct node_id *id1,
@@ -595,8 +569,6 @@ struct chan *new_chan(struct routing_state *rstate,
 
 	uintmap_add(&rstate->chanmap, scid->u64, chan);
 
-	/* Initialize shadow structure if it's local */
-	maybe_add_local_chan(rstate, chan);
 	return chan;
 }
 
@@ -795,13 +767,6 @@ static void destroy_pending_cannouncement(struct pending_cannouncement *pending,
 	pending_cannouncement_map_del(&rstate->pending_cannouncements, pending);
 }
 
-static bool is_local_channel(const struct routing_state *rstate,
-			     const struct chan *chan)
-{
-	return node_id_eq(&chan->nodes[0]->id, &rstate->local_id)
-		|| node_id_eq(&chan->nodes[1]->id, &rstate->local_id);
-}
-
 static void add_channel_announce_to_broadcast(struct routing_state *rstate,
 					      struct chan *chan,
 					      const u8 *channel_announce,
@@ -809,7 +774,7 @@ static void add_channel_announce_to_broadcast(struct routing_state *rstate,
 					      u32 index)
 {
 	u8 *addendum = towire_gossip_store_channel_amount(tmpctx, chan->sat);
-	bool is_local = is_local_channel(rstate, chan);
+	bool is_local = local_direction(rstate, chan, NULL);
 
 	chan->bcast.timestamp = timestamp;
 	/* 0, unless we're loading from store */
@@ -921,7 +886,7 @@ u8 *handle_channel_announcement(struct routing_state *rstate,
 {
 	struct pending_cannouncement *pending;
 	struct bitcoin_blkid chain_hash;
-	u8 *features, *err;
+	u8 *features, *warn;
 	secp256k1_ecdsa_signature node_signature_1, node_signature_2;
 	secp256k1_ecdsa_signature bitcoin_signature_1, bitcoin_signature_2;
 	struct chan *chan;
@@ -946,7 +911,7 @@ u8 *handle_channel_announcement(struct routing_state *rstate,
 					   &pending->node_id_2,
 					   &pending->bitcoin_key_1,
 					   &pending->bitcoin_key_2)) {
-		err = towire_warningfmt(rstate, NULL,
+		warn = towire_warningfmt(rstate, NULL,
 					"Malformed channel_announcement %s",
 					tal_hex(pending, pending->announce));
 		goto malformed;
@@ -1026,7 +991,7 @@ u8 *handle_channel_announcement(struct routing_state *rstate,
 	}
 
 	/* Note that if node_id_1 or node_id_2 are malformed, it's caught here */
-	err = check_channel_announcement(rstate,
+	warn = check_channel_announcement(rstate,
 					 &pending->node_id_1,
 					 &pending->node_id_2,
 					 &pending->bitcoin_key_1,
@@ -1036,13 +1001,15 @@ u8 *handle_channel_announcement(struct routing_state *rstate,
 					 &bitcoin_signature_1,
 					 &bitcoin_signature_2,
 					 pending->announce);
-	if (err) {
+	if (warn) {
 		/* BOLT #7:
 		 *
 		 * - if `bitcoin_signature_1`, `bitcoin_signature_2`,
 		 *   `node_signature_1` OR `node_signature_2` are invalid OR NOT
 		 *    correct:
-		 *    - SHOULD fail the connection.
+		 *   - SHOULD send a `warning`.
+		 *   - MAY close the connection.
+		 *   - MUST ignore the message.
 		 */
 		goto malformed;
 	}
@@ -1084,7 +1051,7 @@ u8 *handle_channel_announcement(struct routing_state *rstate,
 malformed:
 	tal_free(pending);
 	*scid = NULL;
-	return err;
+	return warn;
 
 ignored:
 	tal_free(pending);
@@ -1381,7 +1348,7 @@ bool routing_add_channel_update(struct routing_state *rstate,
 	} else if (!is_chan_public(chan)) {
 		/* For private channels, we get updates without an announce: don't
 		 * broadcast them!  But save local ones to store anyway. */
-		assert(is_local_channel(rstate, chan));
+		assert(local_direction(rstate, chan, NULL));
 		/* Don't save if we're loading from store */
 		if (!index) {
 			hc->bcast.index
@@ -1399,7 +1366,7 @@ bool routing_add_channel_update(struct routing_state *rstate,
 		hc->bcast.index
 			= gossip_store_add(rstate->gs, update,
 					   hc->bcast.timestamp,
-					   is_local_channel(rstate, chan),
+					   local_direction(rstate, chan, NULL),
 					   NULL);
 		if (hc->bcast.timestamp > rstate->last_timestamp
 		    && hc->bcast.timestamp < time_now().ts.tv_sec)
@@ -1492,21 +1459,20 @@ u8 *handle_channel_update(struct routing_state *rstate, const u8 *update TAKES,
 	u32 fee_proportional_millionths;
 	struct bitcoin_blkid chain_hash;
 	u8 direction;
-	size_t len = tal_count(update);
 	struct pending_cannouncement *pending;
-	u8 *err;
+	u8 *warn;
 
-	serialized = tal_dup_arr(tmpctx, u8, update, len, 0);
+	serialized = tal_dup_talarr(tmpctx, u8, update);
 	if (!fromwire_channel_update(serialized, &signature,
 				     &chain_hash, &short_channel_id,
 				     &timestamp, &message_flags,
 				     &channel_flags, &expiry,
 				     &htlc_minimum, &fee_base_msat,
 				     &fee_proportional_millionths)) {
-		err = towire_warningfmt(rstate, NULL,
-					"Malformed channel_update %s",
-					tal_hex(tmpctx, serialized));
-		return err;
+		warn = towire_warningfmt(rstate, NULL,
+					 "Malformed channel_update %s",
+					 tal_hex(tmpctx, serialized));
+		return warn;
 	}
 	direction = channel_flags & 0x1;
 
@@ -1559,18 +1525,18 @@ u8 *handle_channel_update(struct routing_state *rstate, const u8 *update TAKES,
 		return NULL;
 	}
 
-	err = check_channel_update(rstate, owner, &signature, serialized);
-	if (err) {
+	warn = check_channel_update(rstate, owner, &signature, serialized);
+	if (warn) {
 		/* BOLT #7:
 		 *
 		 * - if `signature` is not a valid signature, using `node_id`
 		 *  of the double-SHA256 of the entire message following the
 		 *  `signature` field (including unknown fields following
 		 *  `fee_proportional_millionths`):
+		 *    - SHOULD send a `warning` and close the connection.
 		 *    - MUST NOT process the message further.
-		 *    - SHOULD fail the connection.
 		 */
-		return err;
+		return warn;
 	}
 
 	routing_add_channel_update(rstate, take(serialized), 0, peer, force);
@@ -1600,12 +1566,11 @@ bool routing_add_node_announcement(struct routing_state *rstate,
 		tal_steal(tmpctx, msg);
 
 	/* Note: validity of node_id is already checked. */
-	na_tlv = tlv_node_ann_tlvs_new(tmpctx);
 	if (!fromwire_node_announcement(tmpctx, msg,
 					&signature, &features, &timestamp,
 					&node_id, rgb_color, alias,
 					&addresses,
-					na_tlv)) {
+					&na_tlv)) {
 		return false;
 	}
 
@@ -1741,22 +1706,22 @@ u8 *handle_node_announcement(struct routing_state *rstate, const u8 *node_ann,
 		*was_unknown = false;
 
 	serialized = tal_dup_arr(tmpctx, u8, node_ann, len, 0);
-	na_tlv = tlv_node_ann_tlvs_new(tmpctx);
 	if (!fromwire_node_announcement(tmpctx, serialized,
 					&signature, &features, &timestamp,
 					&node_id, rgb_color, alias,
 					&addresses,
-					na_tlv)) {
+					&na_tlv)) {
 		/* BOLT #7:
 		 *
 		 *   - if `node_id` is NOT a valid compressed public key:
-		 *    - SHOULD fail the connection.
+		 *    - SHOULD send a `warning`.
+		 *    - MAY close the connection.
 		 *    - MUST NOT process the message further.
 		 */
-		u8 *err = towire_warningfmt(rstate, NULL,
+		u8 *warn = towire_warningfmt(rstate, NULL,
 					    "Malformed node_announcement %s",
 					    tal_hex(tmpctx, node_ann));
-		return err;
+		return warn;
 	}
 
 	sha256_double(&hash, serialized + 66, tal_count(serialized) - 66);
@@ -1769,10 +1734,10 @@ u8 *handle_node_announcement(struct routing_state *rstate, const u8 *node_ann,
                  *   message following the `signature` field
                  *   (including unknown fields following
                  *   `fee_proportional_millionths`):
-		 *    - MUST NOT process the message further.
-		 *    - SHOULD fail the connection.
+                 *     - SHOULD send a `warning` and close the connection.
+                 *     - MUST NOT process the message further.
 		 */
-		u8 *err = towire_warningfmt(rstate, NULL,
+		u8 *warn = towire_warningfmt(rstate, NULL,
 					    "Bad signature for %s hash %s"
 					    " on node_announcement %s",
 					    type_to_string(tmpctx,
@@ -1782,7 +1747,7 @@ u8 *handle_node_announcement(struct routing_state *rstate, const u8 *node_ann,
 							   struct sha256_double,
 							   &hash),
 					    tal_hex(tmpctx, node_ann));
-		return err;
+		return warn;
 	}
 
 	wireaddrs = fromwire_wireaddr_array(tmpctx, addresses);
@@ -1791,13 +1756,14 @@ u8 *handle_node_announcement(struct routing_state *rstate, const u8 *node_ann,
 		 *
 		 * - if `addrlen` is insufficient to hold the address
 		 *  descriptors of the known types:
-		 *    - SHOULD fail the connection.
+		 *    - SHOULD send a `warning`.
+		 *    - MAY close the connection.
 		 */
-		u8 *err = towire_warningfmt(rstate, NULL,
+		u8 *warn = towire_warningfmt(rstate, NULL,
 					    "Malformed wireaddrs %s in %s.",
 					    tal_hex(tmpctx, wireaddrs),
 					    tal_hex(tmpctx, node_ann));
-		return err;
+		return warn;
 	}
 
 	/* May still fail, if we don't know the node. */
@@ -1863,22 +1829,17 @@ void route_prune(struct routing_state *rstate)
 }
 
 bool routing_add_private_channel(struct routing_state *rstate,
-				 const struct peer *peer,
-				 const u8 *msg, u64 index)
+				 const struct node_id *id,
+				 struct amount_sat capacity,
+				 const u8 *chan_ann, u64 index)
 {
 	struct short_channel_id scid;
 	struct node_id node_id[2];
 	struct pubkey ignorekey;
-	struct amount_sat sat;
 	struct chan *chan;
-	u8 *features, *chan_ann;
+	u8 *features;
 	secp256k1_ecdsa_signature ignoresig;
 	struct bitcoin_blkid chain_hash;
-
-	if (!fromwire_gossip_store_private_channel(tmpctx, msg,
-						   &sat, &chan_ann))
-		return false;
-
 
 	if (!fromwire_channel_announcement(tmpctx, chan_ann,
 					   &ignoresig,
@@ -1894,21 +1855,46 @@ bool routing_add_private_channel(struct routing_state *rstate,
 					   &ignorekey))
 		return false;
 
-	/* Can happen on channeld restart. */
-	if (get_channel(rstate, &scid)) {
-		status_peer_debug(peer ? &peer->id : NULL,
-				  "Attempted to local_add_channel a known channel");
+	/* Happens on channeld restart. */
+	if (get_channel(rstate, &scid))
 		return true;
+
+	/* Make sure this id (if any) was allowed to create this */
+	if (id) {
+		struct node_id expected[2];
+		int cmp = node_id_cmp(&rstate->local_id, id);
+
+		if (cmp < 0) {
+			expected[0] = rstate->local_id;
+			expected[1] = *id;
+		} else if (cmp > 0) {
+			expected[0] = *id;
+			expected[1] = rstate->local_id;
+		} else {
+			/* lightningd sets id, so this is fatal */
+			status_failed(STATUS_FAIL_MASTER_IO,
+				      "private_channel peer was us?");
+		}
+
+		if (!node_id_eq(&node_id[0], &expected[0])
+		    || !node_id_eq(&node_id[1], &expected[1])) {
+			status_peer_broken(id, "private channel %s<->%s invalid",
+					   type_to_string(tmpctx, struct node_id,
+							  &node_id[0]),
+					   type_to_string(tmpctx, struct node_id,
+							  &node_id[1]));
+			return false;
+		}
 	}
 
-	status_peer_debug(peer ? &peer->id : NULL,
-			  "local_add_channel %s",
-			  type_to_string(tmpctx, struct short_channel_id, &scid));
-
 	/* Create new (unannounced) channel */
-	chan = new_chan(rstate, &scid, &node_id[0], &node_id[1], sat);
-	if (!index)
+	chan = new_chan(rstate, &scid, &node_id[0], &node_id[1], capacity);
+	if (!index) {
+		u8 *msg = towire_gossip_store_private_channel(tmpctx,
+							      capacity,
+							      chan_ann);
 		index = gossip_store_add(rstate->gs, msg, 0, false, NULL);
+	}
 	chan->bcast.index = index;
 	return true;
 }

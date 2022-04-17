@@ -15,9 +15,17 @@ struct oneshot *new_reltimer_(struct timers *timers,
 	new_reltimer_((timers), (ctx), (relexpire),			\
 		      typesafe_cb(void, void *, (func), (arg)), (arg))
 
-/* Get timer arg. */
-void *reltimer_arg(struct oneshot *t);
+struct oneshot *new_abstimer_(struct timers *timers,
+			      const tal_t *ctx,
+			      struct timemono expiry,
+			      void (*cb)(void *), void *arg);
+#define new_abstimer(timers, ctx, expiry, func, arg)		\
+	new_abstimer_((timers), (ctx), (expiry),			\
+		      typesafe_cb(void, void *, (func), (arg)), (arg))
 
-void timer_expired(tal_t *ctx, struct timer *timer);
+/* Get timer arg. */
+void *oneshot_arg(struct oneshot *t);
+
+void timer_expired(struct timer *timer);
 
 #endif /* LIGHTNING_COMMON_TIMEOUT_H */

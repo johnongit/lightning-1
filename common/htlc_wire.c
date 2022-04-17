@@ -14,16 +14,28 @@ static struct failed_htlc *failed_htlc_dup(const tal_t *ctx,
 		return cast_const(struct failed_htlc *, tal_steal(ctx, f));
 	newf = tal(ctx, struct failed_htlc);
 	newf->id = f->id;
-	if (f->sha256_of_onion)
-		newf->sha256_of_onion = tal_dup(newf, struct sha256, f->sha256_of_onion);
-	else
-		newf->sha256_of_onion = NULL;
+	newf->sha256_of_onion = tal_dup_or_null(newf, struct sha256,
+						f->sha256_of_onion);
 	newf->badonion = f->badonion;
 	if (f->onion)
 		newf->onion = dup_onionreply(newf, f->onion);
 	else
 		newf->onion = NULL;
 	return newf;
+}
+
+struct simple_htlc *new_simple_htlc(const tal_t *ctx,
+				    enum side side,
+				    struct amount_msat amount,
+				    const struct sha256 *payment_hash,
+				    u32 cltv_expiry)
+{
+	struct simple_htlc *simple = tal(ctx, struct simple_htlc);
+	simple->side = side;
+	simple->amount = amount;
+	simple->payment_hash = *payment_hash;
+	simple->cltv_expiry = cltv_expiry;
+	return simple;
 }
 
 struct existing_htlc *new_existing_htlc(const tal_t *ctx,
@@ -46,15 +58,9 @@ struct existing_htlc *new_existing_htlc(const tal_t *ctx,
 	existing->payment_hash = *payment_hash;
 	memcpy(existing->onion_routing_packet, onion_routing_packet,
 	       sizeof(existing->onion_routing_packet));
-	if (blinding)
-		existing->blinding = tal_dup(existing, struct pubkey, blinding);
-	else
-		existing->blinding = NULL;
-	if (preimage)
-		existing->payment_preimage
-			= tal_dup(existing, struct preimage, preimage);
-	else
-		existing->payment_preimage = NULL;
+	existing->blinding = tal_dup_or_null(existing, struct pubkey, blinding);
+	existing->payment_preimage
+		= tal_dup_or_null(existing, struct preimage, preimage);
 	if (failed)
 		existing->failed = failed_htlc_dup(existing, failed);
 	else
@@ -106,6 +112,14 @@ void towire_existing_htlc(u8 **pptr, const struct existing_htlc *existing)
 		towire_pubkey(pptr, existing->blinding);
 	} else
 		towire_bool(pptr, false);
+}
+
+void towire_simple_htlc(u8 **pptr, const struct simple_htlc *simple)
+{
+	towire_side(pptr, simple->side);
+	towire_amount_msat(pptr, simple->amount);
+	towire_sha256(pptr, &simple->payment_hash);
+	towire_u32(pptr, simple->cltv_expiry);
 }
 
 void towire_fulfilled_htlc(u8 **pptr, const struct fulfilled_htlc *fulfilled)
@@ -203,6 +217,18 @@ struct existing_htlc *fromwire_existing_htlc(const tal_t *ctx,
 	} else
 		existing->blinding = NULL;
 	return existing;
+}
+
+struct simple_htlc *fromwire_simple_htlc(const tal_t *ctx,
+					 const u8 **cursor, size_t *max)
+{
+	struct simple_htlc *simple = tal(ctx, struct simple_htlc);
+
+	simple->side = fromwire_side(cursor, max);
+	simple->amount = fromwire_amount_msat(cursor, max);
+	fromwire_sha256(cursor, max, &simple->payment_hash);
+	simple->cltv_expiry = fromwire_u32(cursor, max);
+	return simple;
 }
 
 void fromwire_fulfilled_htlc(const u8 **cursor, size_t *max,

@@ -11,7 +11,7 @@
 #include <common/wireaddr.h>
 #include <wallet/wallet.h>
 
-struct per_peer_state;
+struct peer_fd;
 struct wally_psbt;
 
 struct peer {
@@ -29,6 +29,9 @@ struct peer {
 
 	/* Our channels */
 	struct list_head channels;
+
+	/* Are we connected? */
+	bool is_connected;
 
 	/* Our (only) uncommitted channel, still opening. */
 	struct uncommitted_channel *uncommitted_channel;
@@ -64,14 +67,15 @@ struct peer *peer_from_json(struct lightningd *ld,
 			    const char *buffer,
 			    const jsmntok_t *peeridtok);
 
-void peer_connected(struct lightningd *ld, const u8 *msg,
-		    int peer_fd, int gossip_fd, int gossip_store_fd);
+void peer_connected(struct lightningd *ld, const u8 *msg);
+void peer_disconnect_done(struct lightningd *ld, const u8 *msg);
+void peer_active(struct lightningd *ld, const u8 *msg, int peer_fd);
 
 /* Could be configurable. */
 #define OUR_CHANNEL_FLAGS CHANNEL_FLAGS_ANNOUNCE_CHANNEL
 
 void channel_errmsg(struct channel *channel,
-		    struct per_peer_state *pps,
+		    struct peer_fd *peer_fd,
 		    const struct channel_id *channel_id,
 		    const char *desc,
 		    bool warning,
@@ -80,7 +84,7 @@ void channel_errmsg(struct channel *channel,
 u8 *p2wpkh_for_keyidx(const tal_t *ctx, struct lightningd *ld, u64 keyidx);
 
 /* We've loaded peers from database, set them going. */
-void activate_peers(struct lightningd *ld);
+void setup_peers(struct lightningd *ld);
 
 void drop_to_chain(struct lightningd *ld, struct channel *channel, bool cooperative);
 
@@ -88,6 +92,10 @@ void channel_watch_funding(struct lightningd *ld, struct channel *channel);
 /* If this channel has a "wrong funding" shutdown, watch that too. */
 void channel_watch_wrong_funding(struct lightningd *ld, struct channel *channel);
 
+/* How much can we spend in this channel? */
+struct amount_msat channel_amount_spendable(const struct channel *channel);
+
+/* How much can we receive in this channel? */
 struct amount_msat channel_amount_receivable(const struct channel *channel);
 
 /* Pull peers, channels and HTLCs from db, and wire them up.
@@ -95,11 +103,9 @@ struct amount_msat channel_amount_receivable(const struct channel *channel);
 struct htlc_in_map *load_channels_from_wallet(struct lightningd *ld);
 
 #if DEVELOPER
-void peer_dev_memleak(struct command *cmd);
+struct leak_detect;
+void peer_dev_memleak(struct lightningd *ld, struct leak_detect *leaks);
 #endif /* DEVELOPER */
-
-void handle_custommsg_in(struct lightningd *ld, const struct node_id *peer_id,
-			 const u8 *msg);
 
 /* Triggered at each new block.  */
 void waitblockheight_notify_new_block(struct lightningd *ld,

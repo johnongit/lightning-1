@@ -9,6 +9,7 @@
 #include <common/shutdown_scriptpubkey.h>
 #include <common/type_to_string.h>
 #include <common/wire_error.h>
+#include <connectd/connectd_wiregen.h>
 #include <errno.h>
 #include <hsmd/capabilities.h>
 #include <lightningd/chaintopology.h>
@@ -17,11 +18,12 @@
 #include <lightningd/closing_control.h>
 #include <lightningd/coin_mvts.h>
 #include <lightningd/dual_open_control.h>
+#include <lightningd/gossip_control.h>
 #include <lightningd/hsm_control.h>
 #include <lightningd/notification.h>
 #include <lightningd/peer_control.h>
-#include <lightningd/ping.h>
-#include <wire/common_wiregen.h>
+#include <lightningd/peer_fd.h>
+#include <wally_bip32.h>
 
 static void update_feerates(struct lightningd *ld, struct channel *channel)
 {
@@ -116,60 +118,63 @@ void notify_feerate_change(struct lightningd *ld)
 	/* FIXME: We should notify onchaind about NORMAL fee change in case
 	 * it's going to generate more txs. */
 	list_for_each(&ld->peers, peer, list) {
-		struct channel *channel = peer_active_channel(peer);
+		struct channel *channel;
 
-		if (!channel)
-			continue;
-
-		/* FIXME: We choose not to drop to chain if we can't contact
-		 * peer.  We *could* do so, however. */
-		try_update_feerates(ld, channel);
+		list_for_each(&peer->channels, channel, list)
+			try_update_feerates(ld, channel);
 	}
+
+	/* FIXME: We choose not to drop to chain if we can't contact
+	 * peer.  We *could* do so, however. */
 }
 
 void channel_record_open(struct channel *channel)
 {
 	struct chain_coin_mvt *mvt;
-	struct amount_msat channel_open_amt;
 	u32 blockheight;
-
-	u8 *ctx = tal(NULL, u8);
+	struct amount_msat start_balance;
+	bool is_pushed = !amount_msat_zero(channel->push);
+	bool is_leased = channel->lease_expiry > 0;
 
 	blockheight = short_channel_id_blocknum(channel->scid);
 
-	/* FIXME: logic here will change for dual funded channels */
+	/* If funds were pushed, add/sub them from the starting balance */
 	if (channel->opener == LOCAL) {
-		if (!amount_sat_to_msat(&channel_open_amt,
-					channel->funding_sats))
-			fatal("Unable to convert funding %s to msat",
-			      type_to_string(tmpctx, struct amount_sat,
-					     &channel->funding_sats));
-
-		/* if we pushed sats, we should decrement that
-		 * from the channel balance */
-		if (amount_msat_greater(channel->push, AMOUNT_MSAT(0))) {
-			mvt = new_coin_pushed(ctx,
-					      type_to_string(tmpctx,
-							     struct channel_id,
-							     &channel->cid),
-					      &channel->funding.txid,
-					      blockheight, channel->push);
-			notify_chain_mvt(channel->peer->ld, mvt);
-		}
+		if (!amount_msat_add(&start_balance,
+				     channel->our_msat, channel->push))
+			fatal("Unable to add push_msat (%s) + our_msat (%s)",
+			      type_to_string(tmpctx, struct amount_msat,
+					     &channel->push),
+			      type_to_string(tmpctx, struct amount_msat,
+					     &channel->our_msat));
 	} else {
-		/* we're not the funder, we record our 'opening balance'
-		 * anyway (there's a small chance we were pushed some
-		 * satoshis, otherwise it's zero) */
-		channel_open_amt = channel->our_msat;
+		if (!amount_msat_sub(&start_balance,
+				    channel->our_msat, channel->push))
+			fatal("Unable to sub our_msat (%s) - push (%s)",
+			      type_to_string(tmpctx, struct amount_msat,
+					     &channel->our_msat),
+			      type_to_string(tmpctx, struct amount_msat,
+					     &channel->push));
 	}
 
-	mvt = new_coin_deposit(ctx,
-			       type_to_string(tmpctx, struct channel_id,
-					      &channel->cid),
-			       &channel->funding,
-			       blockheight, channel_open_amt);
+	mvt = new_coin_channel_open(tmpctx,
+				    &channel->cid,
+				    &channel->funding,
+				    blockheight,
+				    start_balance,
+				    channel->funding_sats,
+				    channel->opener == LOCAL,
+				    is_leased);
+
 	notify_chain_mvt(channel->peer->ld, mvt);
-	tal_free(ctx);
+
+	/* If we pushed sats, *now* record them */
+	if (is_pushed)
+		notify_channel_mvt(channel->peer->ld,
+				   new_coin_channel_push(tmpctx, &channel->cid,
+							 channel->push,
+							 is_leased ? LEASE_FEE : PUSHED,
+							 channel->opener == REMOTE));
 }
 
 static void lockin_complete(struct channel *channel)
@@ -271,6 +276,12 @@ static void peer_got_shutdown(struct channel *channel, const u8 *msg)
 	bool anysegwit = feature_negotiated(ld->our_features,
 					    channel->peer->their_features,
 					    OPT_SHUTDOWN_ANYSEGWIT);
+	bool anchors = feature_negotiated(ld->our_features,
+					  channel->peer->their_features,
+					  OPT_ANCHOR_OUTPUTS)
+		|| feature_negotiated(ld->our_features,
+				      channel->peer->their_features,
+				      OPT_ANCHORS_ZERO_FEE_HTLC_TX);
 
 	if (!fromwire_channeld_got_shutdown(channel, msg, &scriptpubkey,
 					    &wrong_funding)) {
@@ -279,17 +290,31 @@ static void peer_got_shutdown(struct channel *channel, const u8 *msg)
 		return;
 	}
 
-	/* FIXME: Add to spec that we must allow repeated shutdown! */
-	tal_free(channel->shutdown_scriptpubkey[REMOTE]);
-	channel->shutdown_scriptpubkey[REMOTE] = scriptpubkey;
+	/* BOLT #2:
+	 * A receiving node:
+	 *...
+	 *   - if the `scriptpubkey` is not in one of the above forms:
+	 *     - SHOULD send a `warning`.
+	 */
+	if (!valid_shutdown_scriptpubkey(scriptpubkey, anysegwit, anchors)) {
+		u8 *warning = towire_warningfmt(NULL,
+						&channel->cid,
+						"Bad shutdown scriptpubkey %s",
+						tal_hex(tmpctx, scriptpubkey));
 
-	if (!valid_shutdown_scriptpubkey(scriptpubkey, anysegwit)) {
-		channel_fail_permanent(channel,
-				       REASON_PROTOCOL,
-				       "Bad shutdown scriptpubkey %s",
+		/* Get connectd to send warning, and then allow reconnect. */
+		subd_send_msg(ld->connectd,
+			      take(towire_connectd_peer_final_msg(NULL,
+								  &channel->peer->id,
+								  warning)));
+		channel_fail_reconnect(channel, "Bad shutdown scriptpubkey %s",
 				       tal_hex(tmpctx, scriptpubkey));
 		return;
 	}
+
+	/* FIXME: Add to spec that we must allow repeated shutdown! */
+	tal_free(channel->shutdown_scriptpubkey[REMOTE]);
+	channel->shutdown_scriptpubkey[REMOTE] = scriptpubkey;
 
 	/* If we weren't already shutting down, we are now */
 	if (channel->state != CHANNELD_SHUTTING_DOWN)
@@ -348,17 +373,17 @@ static void peer_start_closingd_after_shutdown(struct channel *channel,
 					       const u8 *msg,
 					       const int *fds)
 {
-	struct per_peer_state *pps;
+	struct peer_fd *peer_fd;
 
-	if (!fromwire_channeld_shutdown_complete(tmpctx, msg, &pps)) {
+	if (!fromwire_channeld_shutdown_complete(msg)) {
 		channel_internal_error(channel, "bad shutdown_complete: %s",
 				       tal_hex(msg, msg));
 		return;
 	}
-	per_peer_state_set_fds_arr(pps, fds);
+	peer_fd = new_peer_fd_arr(msg, fds);
 
 	/* This sets channel->owner, closes down channeld. */
-	peer_start_closingd(channel, pps);
+	peer_start_closingd(channel, peer_fd);
 
 	/* We might have reconnected, so already be here. */
 	if (!channel_closed(channel)
@@ -402,6 +427,23 @@ static void handle_error_channel(struct channel *channel,
 	}
 
 	forget(channel);
+}
+
+static void handle_local_private_channel(struct channel *channel, const u8 *msg)
+{
+	struct amount_sat capacity;
+	u8 *features;
+
+	if (!fromwire_channeld_local_private_channel(msg, msg, &capacity,
+						     &features)) {
+		channel_internal_error(channel,
+				       "bad channeld_local_private_channel %s",
+				       tal_hex(channel, msg));
+		return;
+	}
+
+	tell_gossipd_local_private_channel(channel->peer->ld, channel,
+					   capacity, features);
 }
 
 static void forget_channel(struct channel *channel, const char *why)
@@ -482,9 +524,9 @@ static unsigned channel_msg(struct subd *sd, const u8 *msg, const int *fds)
 		peer_got_shutdown(sd->channel, msg);
 		break;
 	case WIRE_CHANNELD_SHUTDOWN_COMPLETE:
-		/* We expect 3 fds. */
+		/* We expect 1 fd. */
 		if (!fds)
-			return 3;
+			return 1;
 		peer_start_closingd_after_shutdown(sd->channel, msg, fds);
 		break;
 	case WIRE_CHANNELD_FAIL_FALLEN_BEHIND:
@@ -493,8 +535,18 @@ static unsigned channel_msg(struct subd *sd, const u8 *msg, const int *fds)
 	case WIRE_CHANNELD_SEND_ERROR_REPLY:
 		handle_error_channel(sd->channel, msg);
 		break;
-	case WIRE_CHANNELD_PING_REPLY:
-		ping_reply(sd, msg);
+	case WIRE_CHANNELD_USED_CHANNEL_UPDATE:
+		/* This tells gossipd we used it. */
+		get_channel_update(sd->channel);
+		break;
+	case WIRE_CHANNELD_LOCAL_CHANNEL_UPDATE:
+		tell_gossipd_local_channel_update(sd->ld, sd->channel, msg);
+		break;
+	case WIRE_CHANNELD_LOCAL_CHANNEL_ANNOUNCEMENT:
+		tell_gossipd_local_channel_announce(sd->ld, sd->channel, msg);
+		break;
+	case WIRE_CHANNELD_LOCAL_PRIVATE_CHANNEL:
+		handle_local_private_channel(sd->channel, msg);
 		break;
 #if EXPERIMENTAL_FEATURES
 	case WIRE_CHANNELD_UPGRADED:
@@ -516,7 +568,8 @@ static unsigned channel_msg(struct subd *sd, const u8 *msg, const int *fds)
 	case WIRE_CHANNELD_DEV_REENABLE_COMMIT:
 	case WIRE_CHANNELD_FEERATES:
 	case WIRE_CHANNELD_BLOCKHEIGHT:
-	case WIRE_CHANNELD_SPECIFIC_FEERATES:
+	case WIRE_CHANNELD_CONFIG_CHANNEL:
+	case WIRE_CHANNELD_CHANNEL_UPDATE:
 	case WIRE_CHANNELD_DEV_MEMLEAK:
 	case WIRE_CHANNELD_DEV_QUIESCE:
 		/* Replies go to requests. */
@@ -525,16 +578,6 @@ static unsigned channel_msg(struct subd *sd, const u8 *msg, const int *fds)
 	case WIRE_CHANNELD_DEV_MEMLEAK_REPLY:
 	case WIRE_CHANNELD_SEND_ERROR:
 	case WIRE_CHANNELD_DEV_QUIESCE_REPLY:
-	case WIRE_CHANNELD_PING:
-		break;
-	}
-
-	switch ((enum common_wire)t) {
-	case WIRE_CUSTOMMSG_IN:
-		handle_custommsg_in(sd->ld, sd->node_id, msg);
-		break;
-	/* We send these. */
-	case WIRE_CUSTOMMSG_OUT:
 		break;
 	}
 
@@ -542,10 +585,10 @@ static unsigned channel_msg(struct subd *sd, const u8 *msg, const int *fds)
 }
 
 void peer_start_channeld(struct channel *channel,
-			 struct per_peer_state *pps,
+			 struct peer_fd *peer_fd,
 			 const u8 *fwd_msg,
 			 bool reconnected,
-			 const u8 *reestablish_only)
+			 bool reestablish_only)
 {
 	u8 *initmsg;
 	int hsmfd;
@@ -568,7 +611,7 @@ void peer_start_channeld(struct channel *channel,
 				  | HSM_CAP_SIGN_ONCHAIN_TX);
 
 	channel_set_owner(channel,
-			  new_channel_subd(ld,
+			  new_channel_subd(channel, ld,
 					   "lightning_channeld",
 					   channel,
 					   &channel->peer->id,
@@ -577,9 +620,7 @@ void peer_start_channeld(struct channel *channel,
 					   channel_msg,
 					   channel_errmsg,
 					   channel_set_billboard,
-					   take(&pps->peer_fd),
-					   take(&pps->gossip_fd),
-					   take(&pps->gossip_store_fd),
+					   take(&peer_fd->fd),
 					   take(&hsmfd), NULL));
 
 	if (!channel->owner) {
@@ -645,69 +686,89 @@ void peer_start_channeld(struct channel *channel,
 	pbases = wallet_penalty_base_load_for_channel(
 	    tmpctx, channel->peer->ld->wallet, channel->dbid);
 
+	struct ext_key final_ext_key;
+	if (bip32_key_from_parent(
+		    ld->wallet->bip32_base,
+		    channel->final_key_idx,
+		    BIP32_FLAG_KEY_PUBLIC,
+		    &final_ext_key) != WALLY_OK) {
+		channel_internal_error(channel,
+				       "Could not derive final_ext_key %"PRIu64,
+				       channel->final_key_idx);
+		return;
+	}
+
 	initmsg = towire_channeld_init(tmpctx,
-				      chainparams,
- 				      ld->our_features,
-				      &channel->cid,
-				      &channel->funding,
-				      channel->funding_sats,
-				      channel->minimum_depth,
-				      get_block_height(ld->topology),
-				      channel->blockheight_states,
-				      channel->lease_expiry,
-				      &channel->our_config,
-				      &channel->channel_info.their_config,
-				      channel->fee_states,
-				      feerate_min(ld, NULL),
-				      feerate_max(ld, NULL),
-				      try_get_feerate(ld->topology, FEERATE_PENALTY),
-				      &channel->last_sig,
-				      pps,
-				      &channel->channel_info.remote_fundingkey,
-				      &channel->channel_info.theirbase,
-				      &channel->channel_info.remote_per_commit,
-				      &channel->channel_info.old_remote_per_commit,
-				      channel->opener,
-				      channel->feerate_base,
-				      channel->feerate_ppm,
-				      channel->our_msat,
-				      &channel->local_basepoints,
-				      &channel->local_funding_pubkey,
-				      &ld->id,
-				      &channel->peer->id,
-				      cfg->commit_time_ms,
-				      cfg->cltv_expiry_delta,
-				      channel->last_was_revoke,
-				      channel->last_sent_commit,
-				      channel->next_index[LOCAL],
-				      channel->next_index[REMOTE],
-				      num_revocations,
-				      channel->next_htlc_id,
-				      htlcs,
-				      channel->scid != NULL,
-				      channel->remote_funding_locked,
-				      &scid,
-				      reconnected,
+				       chainparams,
+				       ld->our_features,
+				       &channel->cid,
+				       &channel->funding,
+				       channel->funding_sats,
+				       channel->minimum_depth,
+				       get_block_height(ld->topology),
+				       channel->blockheight_states,
+				       channel->lease_expiry,
+				       &channel->our_config,
+				       &channel->channel_info.their_config,
+				       channel->fee_states,
+				       feerate_min(ld, NULL),
+				       feerate_max(ld, NULL),
+				       try_get_feerate(ld->topology, FEERATE_PENALTY),
+				       &channel->last_sig,
+				       &channel->channel_info.remote_fundingkey,
+				       &channel->channel_info.theirbase,
+				       &channel->channel_info.remote_per_commit,
+				       &channel->channel_info.old_remote_per_commit,
+				       channel->opener,
+				       channel->feerate_base,
+				       channel->feerate_ppm,
+				       channel->htlc_minimum_msat,
+				       channel->htlc_maximum_msat,
+				       channel->our_msat,
+				       &channel->local_basepoints,
+				       &channel->local_funding_pubkey,
+				       &ld->id,
+				       &channel->peer->id,
+				       cfg->commit_time_ms,
+				       cfg->cltv_expiry_delta,
+				       channel->last_was_revoke,
+				       channel->last_sent_commit,
+				       channel->next_index[LOCAL],
+				       channel->next_index[REMOTE],
+				       num_revocations,
+				       channel->next_htlc_id,
+				       htlcs,
+				       channel->scid != NULL,
+				       channel->remote_funding_locked,
+				       &scid,
+				       reconnected,
 				       /* Anything that indicates we are or have
 					* shut down */
-				      channel->state == CHANNELD_SHUTTING_DOWN
+				       channel->state == CHANNELD_SHUTTING_DOWN
 				       || channel->state == CLOSINGD_SIGEXCHANGE
 				       || channel_closed(channel),
-				      channel->shutdown_scriptpubkey[REMOTE] != NULL,
-				      channel->shutdown_scriptpubkey[LOCAL],
-				      channel->channel_flags,
-				      fwd_msg,
-				      reached_announce_depth,
-				      &last_remote_per_commit_secret,
-				      channel->peer->their_features,
-				      channel->remote_upfront_shutdown_script,
-				      remote_ann_node_sig,
-				      remote_ann_bitcoin_sig,
-				      channel->type,
-				      IFDEV(ld->dev_fast_gossip, false),
-				      IFDEV(dev_fail_process_onionpacket, false),
-				      pbases,
-				      reestablish_only);
+				       channel->shutdown_scriptpubkey[REMOTE] != NULL,
+				       channel->final_key_idx,
+				       &final_ext_key,
+				       channel->shutdown_scriptpubkey[LOCAL],
+				       channel->channel_flags,
+				       fwd_msg,
+				       reached_announce_depth,
+				       &last_remote_per_commit_secret,
+				       channel->peer->their_features,
+				       channel->remote_upfront_shutdown_script,
+				       remote_ann_node_sig,
+				       remote_ann_bitcoin_sig,
+				       channel->type,
+				       IFDEV(ld->dev_fast_gossip, false),
+				       IFDEV(dev_fail_process_onionpacket, false),
+				       IFDEV(ld->dev_disable_commit == -1
+					     ? NULL
+					     : (u32 *)&ld->dev_disable_commit,
+					     NULL),
+				       pbases,
+				       reestablish_only,
+				       channel->channel_update);
 
 	/* We don't expect a response: we are triggered by funding_depth_cb. */
 	subd_send_msg(channel->owner, take(initmsg));
@@ -867,18 +928,6 @@ void channel_notify_new_block(struct lightningd *ld,
 	tal_free(to_forget);
 }
 
-struct channel *find_channel_by_id(const struct peer *peer,
-				   const struct channel_id *cid)
-{
-	struct channel *c;
-
-	list_for_each(&peer->channels, c, list) {
-		if (channel_id_eq(&c->cid, cid))
-			return c;
-	}
-	return NULL;
-}
-
 /* Since this could vanish while we're checking with bitcoind, we need to save
  * the details and re-lookup.
  *
@@ -998,6 +1047,20 @@ struct command_result *cancel_channel_before_broadcast(struct command *cmd,
 	return command_still_pending(cmd);
 }
 
+void channel_replace_update(struct channel *channel, u8 *update TAKES)
+{
+	tal_free(channel->channel_update);
+	channel->channel_update = tal_dup_talarr(channel, u8, update);
+
+	/* Keep channeld up-to-date */
+	if (!channel->owner || !streq(channel->owner->name, "channeld"))
+		return;
+
+	subd_send_msg(channel->owner,
+		      take(towire_channeld_channel_update(NULL,
+							  channel->channel_update)));
+}
+
 #if DEVELOPER
 static struct command_result *json_dev_feerate(struct command *cmd,
 					       const char *buffer,
@@ -1010,6 +1073,7 @@ static struct command_result *json_dev_feerate(struct command *cmd,
 	struct json_stream *response;
 	struct channel *channel;
 	const u8 *msg;
+	bool more_than_one;
 
 	if (!param(cmd, buffer, params,
 		   p_req("id", param_node_id, &id),
@@ -1021,9 +1085,12 @@ static struct command_result *json_dev_feerate(struct command *cmd,
 	if (!peer)
 		return command_fail(cmd, LIGHTNINGD, "Peer not connected");
 
-	channel = peer_active_channel(peer);
+	channel = peer_any_active_channel(peer, &more_than_one);
 	if (!channel || !channel->owner || channel->state != CHANNELD_NORMAL)
 		return command_fail(cmd, LIGHTNINGD, "Peer bad state");
+	/* This is a dev command: fix the api if you need this! */
+	if (more_than_one)
+		return command_fail(cmd, LIGHTNINGD, "More than one channel");
 
 	msg = towire_channeld_feerates(NULL, *feerate,
 				       feerate_min(cmd->ld, NULL),
@@ -1068,6 +1135,7 @@ static struct command_result *json_dev_quiesce(struct command *cmd,
 	struct peer *peer;
 	struct channel *channel;
 	const u8 *msg;
+	bool more_than_one;
 
 	if (!param(cmd, buffer, params,
 		   p_req("id", param_node_id, &id),
@@ -1078,9 +1146,12 @@ static struct command_result *json_dev_quiesce(struct command *cmd,
 	if (!peer)
 		return command_fail(cmd, LIGHTNINGD, "Peer not connected");
 
-	channel = peer_active_channel(peer);
+	channel = peer_any_active_channel(peer, &more_than_one);
 	if (!channel || !channel->owner || channel->state != CHANNELD_NORMAL)
 		return command_fail(cmd, LIGHTNINGD, "Peer bad state");
+	/* This is a dev command: fix the api if you need this! */
+	if (more_than_one)
+		return command_fail(cmd, LIGHTNINGD, "More than one channel");
 
 	msg = towire_channeld_dev_quiesce(NULL);
 	subd_req(channel->owner, channel->owner, take(msg), -1, 0,

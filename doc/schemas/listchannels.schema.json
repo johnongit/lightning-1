@@ -10,7 +10,7 @@
       "type": "array",
       "items": {
         "type": "object",
-        "additionalProperties": true,
+        "additionalProperties": false,
         "required": [
           "source",
           "destination",
@@ -35,6 +35,10 @@
           "destination": {
             "type": "pubkey",
             "description": "the destination node"
+          },
+          "short_channel_id": {
+            "type": "short_channel_id",
+            "description": "short channel id of channel"
           },
           "public": {
             "type": "boolean",

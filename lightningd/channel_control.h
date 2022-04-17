@@ -7,14 +7,14 @@
 struct channel;
 struct crypto_state;
 struct lightningd;
-struct per_peer_state;
+struct peer_fd;
 struct peer;
 
 void peer_start_channeld(struct channel *channel,
-			 struct per_peer_state *pps,
+			 struct peer_fd *peer_fd,
 			 const u8 *fwd_msg,
 			 bool reconnected,
-			 const u8 *reestablish_only);
+			 bool reestablish_only);
 
 /* Returns true if subd told, otherwise false. */
 bool channel_tell_depth(struct lightningd *ld,
@@ -39,4 +39,8 @@ void channel_record_open(struct channel *channel);
 
 /* A channel has unrecoverably fallen behind */
 void channel_fallen_behind(struct channel *channel, const u8 *msg);
+
+/* Fresh channel_update for this channel. */
+void channel_replace_update(struct channel *channel, u8 *update TAKES);
+
 #endif /* LIGHTNING_LIGHTNINGD_CHANNEL_CONTROL_H */

@@ -94,21 +94,6 @@ static bool can_carry(const struct gossmap *map,
 	return true;
 }
 
-static void json_add_route_hop_style(struct json_stream *response,
-				     const char *fieldname,
-				     enum route_hop_style style)
-{
-	switch (style) {
-	case ROUTE_HOP_LEGACY:
-		json_add_string(response, fieldname, "legacy");
-		return;
-	case ROUTE_HOP_TLV:
-		json_add_string(response, fieldname, "tlv");
-		return;
-	}
-	abort();
-}
-
 /* Output a route hop */
 static void json_add_route_hop(struct json_stream *js,
 			       const char *fieldname,
@@ -121,7 +106,7 @@ static void json_add_route_hop(struct json_stream *js,
 	json_add_num(js, "direction", r->direction);
 	json_add_amount_msat_compat(js, r->amount, "msatoshi", "amount_msat");
 	json_add_num(js, "delay", r->delay);
-	json_add_route_hop_style(js, "style", r->style);
+	json_add_string(js, "style", "tlv");
 	json_object_end(js);
 }
 
@@ -475,7 +460,6 @@ static void json_add_node(struct json_stream *js,
 		struct json_escape *esc;
 		struct tlv_node_ann_tlvs *na_tlvs;
 
-		na_tlvs = tlv_node_ann_tlvs_new(tmpctx);
 		if (!fromwire_node_announcement(nannounce, nannounce,
 						&signature,
 						&features,
@@ -484,7 +468,7 @@ static void json_add_node(struct json_stream *js,
 						rgb_color,
 						alias,
 						&addresses,
-						na_tlvs)) {
+						&na_tlvs)) {
 			plugin_log(plugin, LOG_BROKEN,
 				   "Cannot parse stored node_announcement"
 				   " for %s at %u: %s",
@@ -558,12 +542,12 @@ static struct command_result *json_listnodes(struct command *cmd,
 }
 
 /* What is capacity of peer attached to chan #n? */
-static struct amount_sat peer_capacity(const struct gossmap *gossmap,
+static struct amount_msat peer_capacity(const struct gossmap *gossmap,
 				       const struct gossmap_node *me,
 				       const struct gossmap_node *peer,
 				       const struct gossmap_chan *ourchan)
 {
-	struct amount_sat capacity = AMOUNT_SAT(0);
+	struct amount_msat capacity = AMOUNT_MSAT(0);
 
 	for (size_t i = 0; i < peer->num_chans; i++) {
 		int dir;
@@ -573,8 +557,8 @@ static struct amount_sat peer_capacity(const struct gossmap *gossmap,
 			continue;
 		if (!c->half[!dir].enabled)
 			continue;
-		if (!amount_sat_add(&capacity, capacity,
-				    amount_sat(fp16_to_u64(c->half[dir]
+		if (!amount_msat_add(&capacity, capacity,
+				    amount_msat(fp16_to_u64(c->half[dir]
 							   .htlc_max))))
 			continue;
 	}
@@ -622,10 +606,13 @@ static struct command_result *json_listincoming(struct command *cmd,
 		json_add_amount_msat_only(js, "fee_base_msat",
 					  amount_msat(ourchan->half[!dir]
 						      .base_fee));
+		json_add_amount_msat_only(js, "htlc_max_msat",
+					  amount_msat(fp16_to_u64(ourchan->half[!dir]
+								  .htlc_max)));
 		json_add_u32(js, "fee_proportional_millionths",
 			     ourchan->half[!dir].proportional_fee);
 		json_add_u32(js, "cltv_expiry_delta", ourchan->half[!dir].delay);
-		json_add_amount_sat_only(js, "incoming_capacity_msat",
+		json_add_amount_msat_only(js, "incoming_capacity_msat",
 					 peer_capacity(gossmap,
 						       me, peer, ourchan));
 		json_object_end(js);

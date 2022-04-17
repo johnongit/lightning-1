@@ -34,6 +34,7 @@ LIGHTNINGD_CONTROL_OBJS += \
 ONCHAIND_COMMON_OBJS :=				\
 	common/amount.o				\
 	common/autodata.o			\
+	common/base32.o				\
 	common/bigsize.o			\
 	common/bip32.o				\
 	common/coin_mvt.o			\
@@ -41,7 +42,6 @@ ONCHAIND_COMMON_OBJS :=				\
 	common/daemon.o				\
 	common/daemon_conn.o			\
 	common/derive_basepoints.o		\
-	common/dev_disconnect.o			\
 	common/status_wiregen.o			\
 	common/htlc_tx.o			\
 	common/htlc_wire.o			\
@@ -54,6 +54,7 @@ ONCHAIND_COMMON_OBJS :=				\
 	common/onionreply.o			\
 	common/peer_billboard.o			\
 	common/permute_tx.o			\
+	common/psbt_keypath.o			\
 	common/psbt_open.o			\
 	common/pseudorand.o			\
 	common/setup.o				\
@@ -64,7 +65,8 @@ ONCHAIND_COMMON_OBJS :=				\
 	common/utils.o				\
 	common/utxo.o				\
 	common/version.o			\
-	common/wallet.o
+	common/wallet.o				\
+	common/wireaddr.o
 
 lightningd/lightning_onchaind: $(ONCHAIND_OBJS) $(WIRE_ONION_OBJS) $(ONCHAIND_COMMON_OBJS) $(WIRE_OBJS) $(BITCOIN_OBJS) $(HSMD_CLIENT_OBJS)
 

@@ -8,7 +8,6 @@
 #include <common/fee_states.h>
 #include <common/htlc_wire.h>
 #include <common/penalty_base.h>
-#include <common/per_peer_state.h>
 #include <secp256k1.h>
 #include <wire/peer_wire.h>
 
@@ -23,7 +22,6 @@ msgdata,dualopend_init,our_config,channel_config,
 # Minimum/maximum configuration values we'll accept
 msgdata,dualopend_init,max_to_self_delay,u32,
 msgdata,dualopend_init,min_effective_htlc_capacity_msat,amount_msat,
-msgdata,dualopend_init,pps,per_peer_state,
 msgdata,dualopend_init,our_basepoints,basepoints,
 msgdata,dualopend_init,our_funding_pubkey,pubkey,
 # Constraints in case the other end tries to open a channel.
@@ -40,7 +38,6 @@ msgdata,dualopend_reinit,their_config,channel_config,
 msgdata,dualopend_reinit,channel_id,channel_id,
 msgdata,dualopend_reinit,max_to_self_delay,u32,
 msgdata,dualopend_reinit,min_effective_htlc_capacity_msat,amount_msat,
-msgdata,dualopend_reinit,pps,per_peer_state,
 msgdata,dualopend_reinit,our_basepoints,basepoints,
 msgdata,dualopend_reinit,our_funding_pubkey,pubkey,
 msgdata,dualopend_reinit,their_funding_pubkey,pubkey,
@@ -61,6 +58,7 @@ msgdata,dualopend_reinit,local_shutdown_len,u16,
 msgdata,dualopend_reinit,local_shutdown_scriptpubkey,u8,local_shutdown_len
 msgdata,dualopend_reinit,remote_shutdown_len,u16,
 msgdata,dualopend_reinit,remote_shutdown_scriptpubkey,u8,remote_shutdown_len
+msgdata,dualopend_reinit,local_shutdown_wallet_index,?u32,
 msgdata,dualopend_reinit,remote_funding_sigs_received,bool,
 msgdata,dualopend_reinit,fee_states,fee_states,
 msgdata,dualopend_reinit,channel_flags,u8,
@@ -94,6 +92,7 @@ msgdata,dualopend_got_offer_reply,accepter_funding,amount_sat,
 msgdata,dualopend_got_offer_reply,psbt,wally_psbt,
 msgdata,dualopend_got_offer_reply,shutdown_len,u16,
 msgdata,dualopend_got_offer_reply,our_shutdown_scriptpubkey,?u8,shutdown_len
+msgdata,dualopend_got_offer_reply,our_shutdown_wallet_index,?u32,
 # must go last because of embedded tu32
 msgdata,dualopend_got_offer_reply,lease_rates,?lease_rates,
 
@@ -148,6 +147,7 @@ msgdata,dualopend_commit_rcvd,remote_shutdown_len,u16,
 msgdata,dualopend_commit_rcvd,remote_shutdown_scriptpubkey,u8,remote_shutdown_len
 msgdata,dualopend_commit_rcvd,lease_start_blockheight,u32,
 msgdata,dualopend_commit_rcvd,lease_expiry,u32,
+msgdata,dualopend_commit_rcvd,lease_fee,amount_sat,
 msgdata,dualopend_commit_rcvd,lease_commit_sig,?secp256k1_ecdsa_signature,
 msgdata,dualopend_commit_rcvd,lease_chan_max_msat,u32,
 msgdata,dualopend_commit_rcvd,lease_chan_max_ppt,u16,
@@ -172,6 +172,7 @@ msgdata,dualopend_opener_init,psbt,wally_psbt,
 msgdata,dualopend_opener_init,funding_amount,amount_sat,
 msgdata,dualopend_opener_init,local_shutdown_len,u16,
 msgdata,dualopend_opener_init,local_shutdown_scriptpubkey,u8,local_shutdown_len
+msgdata,dualopend_opener_init,local_shutdown_wallet_index,?u32,
 msgdata,dualopend_opener_init,feerate_per_kw,u32,
 msgdata,dualopend_opener_init,feerate_per_kw_funding,u32,
 msgdata,dualopend_opener_init,channel_flags,u8,
@@ -198,7 +199,6 @@ msgdata,dualopend_peer_locked,remote_per_commit,pubkey,
 
 # dualopend->master this channel has been locked
 msgtype,dualopend_channel_locked,7019
-msgdata,dualopend_channel_locked,pps,per_peer_state,
 
 # master->dualopend funding reached depth; tell peer
 msgtype,dualopend_depth_reached,7020
@@ -219,7 +219,12 @@ msgtype,dualopend_fail_fallen_behind,1028
 
 # Shutdown is complete, ready for closing negotiation. + peer_fd & gossip_fd.
 msgtype,dualopend_shutdown_complete,7025
-msgdata,dualopend_shutdown_complete,per_peer_state,per_peer_state,
+
+# master -> dualopend: do you have a memleak?
+msgtype,dualopend_dev_memleak,7033
+
+msgtype,dualopend_dev_memleak_reply,7133
+msgdata,dualopend_dev_memleak_reply,leak,bool,
 
 # dualopend -> master: this was a dry run, here's some info about this open
 msgtype,dualopend_dry_run,7026
@@ -239,3 +244,9 @@ msgdata,dualopend_validate_lease,their_pubkey,pubkey,
 
 msgtype,dualopend_validate_lease_reply,7127
 msgdata,dualopend_validate_lease_reply,err_msg,?wirestring,
+
+# Tell gossipd about this (as-yet) unannounced channel
+msgtype,dualopend_local_private_channel,7015
+msgdata,dualopend_local_private_channel,capacity,amount_sat,
+msgdata,dualopend_local_private_channel,len,u16,
+msgdata,dualopend_local_private_channel,features,u8,len

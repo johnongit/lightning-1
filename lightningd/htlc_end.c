@@ -144,10 +144,7 @@ struct htlc_in *new_htlc_in(const tal_t *ctx,
 	hin->payment_hash = *payment_hash;
 	hin->status = NULL;
 	hin->fail_immediate = fail_immediate;
-	if (shared_secret)
-		hin->shared_secret = tal_dup(hin, struct secret, shared_secret);
-	else
-		hin->shared_secret = NULL;
+	hin->shared_secret = tal_dup_or_null(hin, struct secret, shared_secret);
 	if (blinding) {
 		hin->blinding = tal_dup(hin, struct pubkey, blinding);
 		hin->blinding_ss = *blinding_ss;
@@ -161,6 +158,7 @@ struct htlc_in *new_htlc_in(const tal_t *ctx,
 	hin->failonion = NULL;
 	hin->preimage = NULL;
 	hin->we_filled = NULL;
+	hin->payload = NULL;
 
 	hin->received_time = time_now();
 
@@ -279,6 +277,7 @@ struct htlc_out *new_htlc_out(const tal_t *ctx,
 			      const u8 *onion_routing_packet,
 			      const struct pubkey *blinding,
 			      bool am_origin,
+			      struct amount_msat final_msat,
 			      u64 partid,
 			      u64 groupid,
 			      struct htlc_in *in)
@@ -302,18 +301,39 @@ struct htlc_out *new_htlc_out(const tal_t *ctx,
 	hout->preimage = NULL;
 	hout->timeout = NULL;
 
-	if (blinding)
-		hout->blinding = tal_dup(hout, struct pubkey, blinding);
-	else
-		hout->blinding = NULL;
+	hout->blinding = tal_dup_or_null(hout, struct pubkey, blinding);
 	hout->am_origin = am_origin;
 	if (am_origin) {
 		hout->partid = partid;
 		hout->groupid = groupid;
+
+		/* Stash the fees (for accounting) */
+		if (!amount_msat_sub(&hout->fees, msat, final_msat))
+			return corrupt("new_htlc_out",
+				       "overflow subtract %s-%s",
+				       type_to_string(tmpctx,
+						      struct amount_msat,
+						      &msat),
+				       type_to_string(tmpctx,
+						      struct amount_msat,
+						      &final_msat));
+
 	}
 	hout->in = NULL;
-	if (in)
+	if (in) {
 		htlc_out_connect_htlc_in(hout, in);
+
+		/* Stash the fees (for accounting) */
+		if (!amount_msat_sub(&hout->fees, in->msat, msat))
+			return corrupt("new_htlc_out",
+				       "overflow subtract %s-%s",
+				       type_to_string(tmpctx,
+						      struct amount_msat,
+						      &in->msat),
+				       type_to_string(tmpctx,
+						      struct amount_msat,
+						      &msat));
+	}
 
 	return htlc_out_check(hout, "new_htlc_out");
 }
