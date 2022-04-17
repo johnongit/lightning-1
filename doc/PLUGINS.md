@@ -1,7 +1,7 @@
 # Plugins
 
 Plugins are a simple yet powerful way to extend the functionality
-provided by c-lightning. They are subprocesses that are started by the
+provided by Core Lightning. They are subprocesses that are started by the
 main `lightningd` daemon and can interact with `lightningd` in a
 variety of ways:
 
@@ -697,20 +697,23 @@ i.e. only definitively resolved HTLCs or confirmed bitcoin transactions.
 ```json
 {
 	"coin_movement": {
-		"version":1,
+		"version":2,
 		"node_id":"03a7103a2322b811f7369cbb27fb213d30bbc0b012082fed3cad7e4498da2dc56b",
-		"movement_idx":0,
 		"type":"chain_mvt",
 		"account_id":"wallet",
-		"txid":"0159693d8f3876b4def468b208712c630309381e9d106a9836fa0a9571a28722", // (`chain_mvt` type only, mandatory)
-		"utxo_txid":"0159693d8f3876b4def468b208712c630309381e9d106a9836fa0a9571a28722", // (`chain_mvt` type only, optional)
-		"vout":1, // (`chain_mvt` type only, optional)
-		"payment_hash": "xxx", // (either type, optional on `chain_mvt`)
-		"part_id": 0, // (`channel_mvt` type only, mandatory)
+		"originating_account": "wallet", // (`chain_mvt` only, optional)
+		"txid":"0159693d8f3876b4def468b208712c630309381e9d106a9836fa0a9571a28722", // (`chain_mvt` only, optional)
+		"utxo_txid":"0159693d8f3876b4def468b208712c630309381e9d106a9836fa0a9571a28722", // (`chain_mvt` only)
+		"vout":1, // (`chain_mvt` only)
+		"payment_hash": "xxx", // (either type, optional on both)
+		"part_id": 0, // (`channel_mvt` only, optional)
 		"credit":"2000000000msat",
 		"debit":"0msat",
-		"tag":"deposit",
-		"blockheight":102, // (`channel_mvt` type only. may be null)
+		"output_value": "2000000000msat", // ('chain_mvt' only)
+		"output_count": 2, // ('chain_mvt' only, typically only channel closes)
+		"fees": "382msat", // ('channel_mvt' only)
+		"tags": ["deposit"],
+		"blockheight":102, // 'chain_mvt' only
 		"timestamp":1585948198,
 		"coin_type":"bc"
 	}
@@ -722,8 +725,6 @@ notification adheres to.
 
 `node_id` specifies the node issuing the coin movement.
 
-`movement_idx` is an increment-only counter for coin moves emitted by this node.
-
 `type` marks the underlying mechanism which moved these coins. There are two
 'types' of `coin_movements`:
   - `channel_mvt`s, which occur as a result of htlcs being resolved and,
@@ -732,11 +733,13 @@ notification adheres to.
 `account_id` is the name of this account. The node's wallet is named 'wallet',
 all channel funds' account are the channel id.
 
+`originating_account` is the account that this movement originated from.
+*Only* tagged on external events (deposits/withdrawals to an external party).
+
 `txid` is the transaction id of the bitcoin transaction that triggered this
 ledger event. `utxo_txid` and `vout` identify the bitcoin output which triggered
-this notification. (`chain_mvt` only) In most cases, the `utxo_txid` will be the
-same as the `txid`, except for `spend_track` notficiations.  Notifications tagged
-`chain_fees` and `journal_entry` do not have a `utxo_txid` as they're not
+this notification. (`chain_mvt` only). Notifications tagged
+`journal_entry` do not have a `utxo_txid` as they're not
 represented in the utxo set.
 
 `payment_hash` is the hash of the preimage used to move this payment. Only
@@ -751,29 +754,93 @@ multiple times. `channel_mvt` only
 `credit` and `debit` are millisatoshi denominated amounts of the fund movement. A
 'credit' is funds deposited into an account; a `debit` is funds withdrawn.
 
+`output_value` is the total value of the on-chain UTXO. Note that for
+channel opens/closes the total output value will not necessarily correspond
+to the amount that's credited/debited.
+
+`output_count` is the total outputs to expect for a channel close. Useful
+for figuring out when every onchain output for a close has been resolved.
+
+`fees` is an HTLC annotation for the amount of fees either paid or
+earned. For "invoice" tagged events, the fees are the total fees
+paid to send that payment. The end amount can be found by subtracting
+the total fees from the `debited` amount. For "routed" tagged events,
+both the debit/credit contain fees. Technically routed debits are the
+'fee generating' event, however we include them on routed credits as well.
 
 `tag` is a movement descriptor. Current tags are as follows:
  - `deposit`: funds deposited
  - `withdrawal`: funds withdrawn
- - `chain_fees`: funds paid for onchain fees. `chain_mvt` only
- - `penalty`: funds paid or gained from a penalty tx. `chain_mvt` only
- - `invoice`: funds paid to or recieved from an invoice. `channel_mvt` only
- - `routed`: funds routed through this node. `channel_mvt` only
- - `journal_entry`: a balance reconciliation event, typically triggered
-                    by a penalty tx onchain. `chain_mvt` only
- - `onchain_htlc`: funds moved via an htlc onchain. `chain_mvt` only
- - `pushed`: funds pushed to peer. `channel_mvt` only.
- - `spend_track`:  informational notification about a wallet utxo spend. `chain_mvt` only.
+ - `penalty`: funds paid or gained from a penalty tx.
+ - `invoice`: funds paid to or recieved from an invoice.
+ - `routed`: funds routed through this node.
+ - `pushed`: funds pushed to peer.
+ - `channel_open` : channel is opened, initial channel balance
+ - `channel_close`: channel is closed, final channel balance
+ - `delayed_to_us`: on-chain output to us, spent back into our wallet
+ - `htlc_timeout`: on-chain htlc timeout output
+ - `htlc_fulfill`: on-chian htlc fulfill output
+ - `htlc_tx`: on-chain htlc tx has happened
+ - `to_wallet`: output being spent into our wallet
+ - `ignored`: output is being ignored
+ - `anchor`: an anchor output
+ - `to_them`: output intended to peer's wallet
+ - `penalized`: output we've 'lost' due to a penalty (failed cheat attempt)
+ - `stolen`: output we've 'lost' due to peer's cheat
+ - `to_miner`: output we've burned to miner (OP_RETURN)
+ - `opener`: tags channel_open, we are the channel opener
+ - `lease_fee`: amount paid as lease fee
+ - `leased`: tags channel_open, channel contains leased funds
 
-`blockheight` is the block the txid is included in. `chain_mvt` only. In the
-case that an output is considered dust, c-lightning does not track its return to
-our wallet. In those cases, the blockheight will be `null`, as they're recorded
-before confirmation.
+`blockheight` is the block the txid is included in. `channel_mvt`s will be null,
+so will the blockheight for withdrawals to external parties (we issue these events
+when we send the tx containing them, before they're included in the chain).
 
 The `timestamp` is seconds since Unix epoch of the node's machine time
 at the time lightningd broadcasts the notification.
 
 `coin_type` is the BIP173 name for the coin which moved.
+
+### `balance_snapshot`
+
+Emitted after we've caught up to the chain head on first start. Lists all
+current accounts (`account_id` matches the `account_id` emitted from
+`coin_movement`). Useful for checkpointing account balances.
+
+```json
+{
+    "balance_snapshots": [
+	{
+	    'node_id': '035d2b1192dfba134e10e540875d366ebc8bc353d5aa766b80c090b39c3a5d885d',
+	    'blockheight': 101,
+	    'timestamp': 1639076327,
+	    'accounts': [
+		{
+		    'account_id': 'wallet',
+		    'balance': '0msat',
+		    'coin_type': 'bcrt'
+		}
+	    ]
+	},
+	{
+	    'node_id': '035d2b1192dfba134e10e540875d366ebc8bc353d5aa766b80c090b39c3a5d885d',
+	    'blockheight': 110,
+	    'timestamp': 1639076343,
+	    'accounts': [
+		{
+		    'account_id': 'wallet',
+		    'balance': '995433000msat',
+		    'coin_type': 'bcrt'
+		}, {
+		    'account_id': '5b65c199ee862f49758603a5a29081912c8816a7c0243d1667489d244d3d055f',
+		     'balance': '500000000msat',
+		    'coin_type': 'bcrt'
+		}
+	    ]
+	}
+    ]
+}
+```
 
 ### `openchannel_peer_sigs`
 
@@ -806,7 +873,7 @@ rely on the shutdown notification always been send.
 ## Hooks
 
 Hooks allow a plugin to define custom behavior for `lightningd`
-without having to modify the c-lightning source code itself. A plugin
+without having to modify the Core Lightning source code itself. A plugin
 declares that it'd like to be consulted on what to do next for certain
 events in the daemon. A hook can then decide how `lightningd` should
 react to the given event.
@@ -1291,7 +1358,6 @@ The payload of the hook call has the following format:
 {
   "onion": {
     "payload": "",
-    "type": "legacy",
     "short_channel_id": "1x2x3",
     "forward_amount": "42msat",
     "outgoing_cltv_value": 500014,
@@ -1312,7 +1378,6 @@ For detailed information about each field please refer to [BOLT 04 of the specif
  - `onion`:
    - `payload` contains the unparsed payload that was sent to us from the
    sender of the payment.
-   - `type` is `legacy` for realm 0 payments, `tlv` for realm > 1.
    - `short_channel_id` determines the channel that the sender is hinting
        should be used next.  Not present if we're the final destination.
    - `forward_amount` is the amount we should be forwarding to the next hop,
@@ -1490,7 +1555,7 @@ The `custommsg` plugin hook is the receiving counterpart to the
 [`sendcustommsg`][sendcustommsg] RPC method and allows plugins to handle
 messages that are not handled internally. The goal of these two components is
 to allow the implementation of custom protocols or prototypes on top of a
-c-lightning node, without having to change the node's implementation itself.
+Core Lightning node, without having to change the node's implementation itself.
 
 The payload for a call follows this format:
 
@@ -1504,12 +1569,12 @@ The payload for a call follows this format:
 This payload would have been sent by the peer with the `node_id` matching
 `peer_id`, and the message has type `0x1337` and contents `ffffffff`. Notice
 that the messages are currently limited to odd-numbered types and must not
-match a type that is handled internally by c-lightning. These limitations are
+match a type that is handled internally by Core Lightning. These limitations are
 in place in order to avoid conflicts with the internal state tracking, and
 avoiding disconnections or channel closures, since odd-numbered message can be
 ignored by nodes (see ["it's ok to be odd" in the specification][oddok] for
 details). The plugin must implement the parsing of the message, including the
-type prefix, since c-lightning does not know how to parse the message.
+type prefix, since Core Lightning does not know how to parse the message.
 
 Because this is a chained hook, the daemon expects the result to be
 `{'result': 'continue'}`. It will fail if something else is returned.
@@ -1560,7 +1625,7 @@ will cause the message not to be handed to any other hooks.
 
 ## Bitcoin backend
 
-C-lightning communicates with the Bitcoin network through a plugin. It uses the
+Core Lightning communicates with the Bitcoin network through a plugin. It uses the
 `bcli` plugin by default but you can use a custom one, multiple custom ones for
 different operations, or write your own for your favourite Bitcoin data source!
 

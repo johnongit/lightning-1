@@ -1,6 +1,7 @@
 #include "config.h"
 #include <ccan/io/io.h>
 #include <common/timeout.h>
+#include <db/exec.h>
 #include <lightningd/io_loop_with_timers.h>
 #include <lightningd/lightningd.h>
 
@@ -26,7 +27,7 @@ void *io_loop_with_timers(struct lightningd *ld)
 			/* This routine is legal in early startup, too. */
 			if (ld->wallet)
 				db_begin_transaction(ld->wallet->db);
-			timer_expired(ld, expired);
+			timer_expired(expired);
 			if (ld->wallet)
 				db_commit_transaction(ld->wallet->db);
 		}

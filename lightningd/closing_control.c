@@ -8,13 +8,13 @@
 #include <closingd/closingd_wiregen.h>
 #include <common/close_tx.h>
 #include <common/closing_fee.h>
+#include <common/configdir.h>
 #include <common/fee_states.h>
 #include <common/initial_commit_tx.h>
 #include <common/json_command.h>
 #include <common/json_helpers.h>
 #include <common/json_tok.h>
 #include <common/param.h>
-#include <common/per_peer_state.h>
 #include <common/shutdown_scriptpubkey.h>
 #include <common/timeout.h>
 #include <common/type_to_string.h>
@@ -36,9 +36,10 @@
 #include <lightningd/opening_common.h>
 #include <lightningd/options.h>
 #include <lightningd/peer_control.h>
+#include <lightningd/peer_fd.h>
 #include <lightningd/subd.h>
 #include <openingd/dualopend_wiregen.h>
-#include <wire/common_wiregen.h>
+#include <wally_bip32.h>
 
 struct close_command {
 	/* Inside struct lightningd close_commands. */
@@ -201,13 +202,16 @@ static bool closing_fee_is_acceptable(struct lightningd *ld,
 	fee = calc_tx_fee(channel->funding_sats, tx);
 	last_fee = calc_tx_fee(channel->funding_sats, channel->last_tx);
 
-	log_debug(channel->log, "Their actual closing tx fee is %s"
-		 " vs previous %s",
-		  type_to_string(tmpctx, struct amount_sat, &fee),
-		  type_to_string(tmpctx, struct amount_sat, &last_fee));
-
 	/* Weight once we add in sigs. */
-	weight = bitcoin_tx_weight(tx) + bitcoin_tx_input_sig_weight() * 2;
+	assert(!tx->wtx->inputs[0].witness
+	       || tx->wtx->inputs[0].witness->num_items == 0);
+	weight = bitcoin_tx_weight(tx) + bitcoin_tx_2of2_input_witness_weight();
+
+	log_debug(channel->log, "Their actual closing tx fee is %s"
+		 " vs previous %s: weight is %"PRIu64,
+		  type_to_string(tmpctx, struct amount_sat, &fee),
+		  type_to_string(tmpctx, struct amount_sat, &last_fee),
+		  weight);
 
 	/* If we don't have a feerate estimate, this gives feerate_floor */
 	min_feerate = feerate_min(ld, &feerate_unknown);
@@ -336,20 +340,10 @@ static unsigned closing_msg(struct subd *sd, const u8 *msg, const int *fds UNUSE
 		break;
 	}
 
-	switch ((enum common_wire)t) {
-	case WIRE_CUSTOMMSG_IN:
-		handle_custommsg_in(sd->ld, sd->node_id, msg);
-		break;
-	/* We send these. */
-	case WIRE_CUSTOMMSG_OUT:
-		break;
-	}
-
 	return 0;
 }
 
-void peer_start_closingd(struct channel *channel,
-			 struct per_peer_state *pps)
+void peer_start_closingd(struct channel *channel, struct peer_fd *peer_fd)
 {
 	u8 *initmsg;
 	u32 min_feerate, feerate, *max_feerate;
@@ -371,16 +365,14 @@ void peer_start_closingd(struct channel *channel,
 				  | HSM_CAP_COMMITMENT_POINT);
 
 	channel_set_owner(channel,
-			  new_channel_subd(ld,
+			  new_channel_subd(channel, ld,
 					   "lightning_closingd",
 					   channel, &channel->peer->id,
 					   channel->log, true,
 					   closingd_wire_name, closing_msg,
 					   channel_errmsg,
 					   channel_set_billboard,
-					   take(&pps->peer_fd),
-					   take(&pps->gossip_fd),
-					   take(&pps->gossip_store_fd),
+					   take(&peer_fd->fd),
 					   take(&hsmfd),
 					   NULL));
 
@@ -453,9 +445,31 @@ void peer_start_closingd(struct channel *channel,
 		return;
 	}
 
+	// Determine the wallet index for our output or NULL if not found.
+	u32 *local_wallet_index = NULL;
+	struct ext_key *local_wallet_ext_key = NULL;
+	u32 index_val;
+	struct ext_key ext_key_val;
+	bool is_p2sh;
+	if (wallet_can_spend(
+		    ld->wallet,
+		    channel->shutdown_scriptpubkey[LOCAL],
+		    &index_val,
+		    &is_p2sh)) {
+		if (bip32_key_from_parent(
+			    ld->wallet->bip32_base,
+			    index_val,
+			    BIP32_FLAG_KEY_PUBLIC,
+			    &ext_key_val) != WALLY_OK) {
+			channel_internal_error(channel, "Could not derive ext public key");
+			return;
+		}
+		local_wallet_index = &index_val;
+		local_wallet_ext_key = &ext_key_val;
+	}
+
 	initmsg = towire_closingd_init(tmpctx,
 				       chainparams,
-				       pps,
 				       &channel->cid,
 				       &channel->funding,
 				       channel->funding_sats,
@@ -467,6 +481,8 @@ void peer_start_closingd(struct channel *channel,
 				       channel->our_config.dust_limit,
 				       min_feerate, feerate, max_feerate,
 				       feelimit,
+				       local_wallet_index,
+				       local_wallet_ext_key,
 				       channel->shutdown_scriptpubkey[LOCAL],
 				       channel->shutdown_scriptpubkey[REMOTE],
 				       channel->closing_fee_negotiation_step,
@@ -476,7 +492,6 @@ void peer_start_closingd(struct channel *channel,
 					&& channel->closing_fee_negotiation_step_unit == CLOSING_FEE_NEGOTIATION_STEP_UNIT_PERCENTAGE)
 				       /* Always use quickclose with anchors */
 				       || option_anchor_outputs,
-				       IFDEV(ld->dev_fast_gossip, false),
 				       channel->shutdown_wrong_funding);
 
 	/* We don't expect a response: it will give us feedback on
@@ -539,6 +554,8 @@ static struct command_result *json_close(struct command *cmd,
 	struct channel *channel;
 	unsigned int *timeout;
 	const u8 *close_to_script = NULL;
+	u32 *final_index;
+	u32 index_val;
 	bool close_script_set, wrong_funding_changed, *force_lease_close;
 	const char *fee_negotiation_step_str;
 	struct bitcoin_outpoint *wrong_funding;
@@ -561,9 +578,14 @@ static struct command_result *json_close(struct command *cmd,
 		return command_param_failed();
 
 	peer = peer_from_json(cmd->ld, buffer, idtok);
-	if (peer)
-		channel = peer_active_channel(peer);
-	else {
+	if (peer) {
+		bool more_than_one;
+		channel = peer_any_active_channel(peer, &more_than_one);
+		if (channel && more_than_one) {
+			return command_fail(cmd, LIGHTNINGD,
+					    "Peer has multiple channels: use channel_id or short_channel_id");
+		}
+	} else {
 		struct command_result *res;
 		res = command_find_channel(cmd, buffer, idtok, &channel);
 		if (res)
@@ -571,13 +593,19 @@ static struct command_result *json_close(struct command *cmd,
 	}
 
 	if (!channel && peer) {
+		bool more_than_one;
 		struct uncommitted_channel *uc = peer->uncommitted_channel;
 		if (uc) {
 			/* Easy case: peer can simply be forgotten. */
 			kill_uncommitted_channel(uc, "close command called");
 			goto discard_unopened;
 		}
-		if ((channel = peer_unsaved_channel(peer))) {
+		channel = peer_any_unsaved_channel(peer, &more_than_one);
+		if (channel) {
+			if (more_than_one) {
+				return command_fail(cmd, LIGHTNINGD,
+						    "Peer has multiple channels: use channel_id or short_channel_id");
+			}
 			channel_unsaved_close_conn(channel,
 						   "close command called");
 			goto discard_unopened;
@@ -595,6 +623,14 @@ static struct command_result *json_close(struct command *cmd,
 				    " current block %u)",
 				    channel->lease_expiry,
 				    get_block_height(cmd->ld->topology));
+
+	/* Set the wallet index to the default value; it is updated
+	 * below if the close_to_script is found to be in the
+	 * wallet. If the close_to_script is not in the wallet
+	 * final_index will be set to NULL instead.*/
+	assert(channel->final_key_idx <= UINT32_MAX);
+	index_val = (u32) channel->final_key_idx;
+	final_index = &index_val;
 
 	/* If we've set a local shutdown script for this peer, and it's not the
 	 * default upfront script, try to close to a different channel.
@@ -625,6 +661,17 @@ static struct command_result *json_close(struct command *cmd,
 		channel->shutdown_scriptpubkey[LOCAL]
 			= tal_steal(channel, cast_const(u8 *, close_to_script));
 		close_script_set = true;
+		/* Is the close script in our wallet? */
+		bool is_p2sh;
+		if (wallet_can_spend(
+			    cmd->ld->wallet,
+			    channel->shutdown_scriptpubkey[LOCAL],
+			    &index_val,
+			    &is_p2sh)) {
+			/* index_val has been set to the discovered wallet index */
+		} else {
+			final_index = NULL;
+		}
 	} else if (!channel->shutdown_scriptpubkey[LOCAL]) {
 		channel->shutdown_scriptpubkey[LOCAL]
 			= p2wpkh_for_keyidx(channel, cmd->ld, channel->final_key_idx);
@@ -638,11 +685,11 @@ static struct command_result *json_close(struct command *cmd,
 				       channel->peer->their_features,
 				       OPT_SHUTDOWN_ANYSEGWIT);
 	if (!valid_shutdown_scriptpubkey(channel->shutdown_scriptpubkey[LOCAL],
-					 anysegwit)) {
+					 anysegwit, !deprecated_apis)) {
 		/* Explicit check for future segwits. */
 		if (!anysegwit &&
 		    valid_shutdown_scriptpubkey(channel->shutdown_scriptpubkey
-						[LOCAL], true)) {
+						[LOCAL], true, !deprecated_apis)) {
 			return command_fail(cmd, JSONRPC2_INVALID_PARAMS,
 					    "Peer does not allow v1+ shutdown addresses");
 		}
@@ -747,11 +794,28 @@ static struct command_result *json_close(struct command *cmd,
 					msg = towire_dualopend_send_shutdown(
 						NULL,
 						channel->shutdown_scriptpubkey[LOCAL]);
-				} else
+				} else {
+					struct ext_key ext_key_val;
+					struct ext_key *final_ext_key = NULL;
+					if (final_index) {
+						if (bip32_key_from_parent(
+							    channel->peer->ld->wallet->bip32_base,
+							    *final_index,
+							    BIP32_FLAG_KEY_PUBLIC,
+							    &ext_key_val) != WALLY_OK) {
+							return command_fail(
+								cmd, LIGHTNINGD,
+								"Could not derive final_ext_key");
+						}
+						final_ext_key = &ext_key_val;
+					}
 					msg = towire_channeld_send_shutdown(
 						NULL,
+						final_index,
+						final_ext_key,
 						channel->shutdown_scriptpubkey[LOCAL],
 						channel->shutdown_wrong_funding);
+				}
 				subd_send_msg(channel->owner, take(msg));
 			}
 

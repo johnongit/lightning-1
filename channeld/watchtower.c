@@ -1,10 +1,12 @@
 #include "config.h"
 #include <bitcoin/feerate.h>
 #include <bitcoin/script.h>
+#include <channeld/channeld.h>
 #include <channeld/watchtower.h>
 #include <common/features.h>
 #include <common/htlc_tx.h>
 #include <common/keyset.h>
+#include <common/psbt_keypath.h>
 #include <common/status.h>
 #include <common/type_to_string.h>
 #include <hsmd/hsmd_wiregen.h>
@@ -16,6 +18,8 @@ const struct bitcoin_tx *
 penalty_tx_create(const tal_t *ctx,
 		  const struct channel *channel,
 		  u32 penalty_feerate,
+		  u32 *final_index,
+		  struct ext_key *final_ext_key,
 		  u8 *final_scriptpubkey,
 		  const struct secret *revocation_preimage,
 		  const struct bitcoin_txid *commitment_txid,
@@ -26,7 +30,7 @@ penalty_tx_create(const tal_t *ctx,
 	struct bitcoin_tx *tx;
 	struct keyset keyset;
 	size_t weight;
-	u8 *msg;
+	const u8 *msg;
 	struct amount_sat fee, min_out, amt;
 	struct bitcoin_signature sig;
 	u32 locktime = 0;
@@ -75,10 +79,13 @@ penalty_tx_create(const tal_t *ctx,
 			     NULL, to_them_sats, NULL, wscript);
 
 	bitcoin_tx_add_output(tx, final_scriptpubkey, NULL, to_them_sats);
+	assert((final_index == NULL) == (final_ext_key == NULL));
+	if (final_index)
+		psbt_add_keypath_to_last_output(tx, *final_index, final_ext_key);
 
 	/* Worst-case sig is 73 bytes */
 	weight = bitcoin_tx_weight(tx) + 1 + 3 + 73 + 0 + tal_count(wscript);
-	weight = elements_add_overhead(weight, 1, 1);
+	weight += elements_tx_overhead(chainparams, 1, 1);
 	fee = amount_tx_fee(penalty_feerate, weight);
 
 	if (!amount_sat_add(&min_out, dust_limit, fee))
@@ -105,16 +112,12 @@ penalty_tx_create(const tal_t *ctx,
 	bitcoin_tx_finalize(tx);
 
 	u8 *hsm_sign_msg =
-	    towire_hsmd_sign_penalty_to_us(ctx, &remote_per_commitment_secret,
+	    towire_hsmd_sign_penalty_to_us(tmpctx, &remote_per_commitment_secret,
 					  tx, wscript);
 
-	if (!wire_sync_write(hsm_fd, take(hsm_sign_msg)))
-		status_failed(STATUS_FAIL_INTERNAL_ERROR,
-			      "Writing sign request to hsm");
-
-	msg = wire_sync_read(tmpctx, hsm_fd);
-	if (!msg || !fromwire_hsmd_sign_tx_reply(msg, &sig))
-		status_failed(STATUS_FAIL_INTERNAL_ERROR,
+	msg = hsm_req(tmpctx, hsm_sign_msg);
+	if (!fromwire_hsmd_sign_tx_reply(msg, &sig))
+		status_failed(STATUS_FAIL_HSM_IO,
 			      "Reading sign_tx_reply: %s", tal_hex(tmpctx, msg));
 
 	witness = bitcoin_witness_sig_and_element(tx, &sig, &ONE, sizeof(ONE),

@@ -11,7 +11,7 @@
 
 struct crypto_state;
 struct io_conn;
-struct per_peer_state;
+struct peer_fd;
 
 /* By convention, replies are requests + 100 */
 #define SUBD_REPLY_OFFSET 100
@@ -20,6 +20,9 @@ struct per_peer_state;
 
 /* One of our subds. */
 struct subd {
+	/* Inside ld->subds */
+	struct list_node list;
+
 	/* Name, like John, or "lightning_hsmd" */
 	const char *name;
 	/* The Big Cheese. */
@@ -43,11 +46,11 @@ struct subd {
 	unsigned (*msgcb)(struct subd *, const u8 *, const int *);
 	const char *(*msgname)(int msgtype);
 
-	/* If per_peer_state == NULL, it was a disconnect/crash.  Otherwise,
+	/* If peer_fd == NULL, it was a disconnect/crash.  Otherwise,
 	 * sufficient information to hand back to gossipd, including the
 	 * error message we sent them if any. */
 	void (*errcb)(void *channel,
-		      struct per_peer_state *pps,
+		      struct peer_fd *peer_fd,
 		      const struct channel_id *channel_id,
 		      const char *desc,
 		      bool warning,
@@ -74,6 +77,9 @@ struct subd {
 
 	/* Callbacks for replies. */
 	struct list_head reqs;
+
+	/* Did lightningd already wait for this pid? */
+	int *wstatus;
 };
 
 /**
@@ -98,6 +104,7 @@ struct subd *new_global_subd(struct lightningd *ld,
 
 /**
  * new_channel_subd - create a new subdaemon for a specific channel.
+ * @ctx: context to allocate from (usually peer or channel)
  * @ld: global state
  * @name: basename of daemon
  * @channel: channel to associate.
@@ -114,7 +121,8 @@ struct subd *new_global_subd(struct lightningd *ld,
  * that many @fds are received before calling again.  If it returns -1, the
  * subdaemon is shutdown.
  */
-struct subd *new_channel_subd_(struct lightningd *ld,
+struct subd *new_channel_subd_(const tal_t *ctx,
+			       struct lightningd *ld,
 			       const char *name,
 			       void *channel,
 			       const struct node_id *node_id,
@@ -124,7 +132,7 @@ struct subd *new_channel_subd_(struct lightningd *ld,
 			       unsigned int (*msgcb)(struct subd *, const u8 *,
 						     const int *fds),
 			       void (*errcb)(void *channel,
-					     struct per_peer_state *pps,
+					     struct peer_fd *peer_fd,
 					     const struct channel_id *channel_id,
 					     const char *desc,
 					     bool warning,
@@ -133,15 +141,15 @@ struct subd *new_channel_subd_(struct lightningd *ld,
 						   const char *happenings),
 			       ...);
 
-#define new_channel_subd(ld, name, channel, node_id, log, 		\
+#define new_channel_subd(ctx, ld, name, channel, node_id, log, 		\
 			 talks_to_peer, msgname, msgcb, errcb, 		\
 			 billboardcb, ...)				\
-	new_channel_subd_((ld), (name), (channel), (node_id), 		\
+	new_channel_subd_((ctx), (ld), (name), (channel), (node_id),	\
 			  (log), (talks_to_peer),			\
 			  (msgname), (msgcb),				\
 			  typesafe_cb_postargs(void, void *, (errcb),	\
 					       (channel),		\
-					       struct per_peer_state *,	\
+					       struct peer_fd *,	\
 					       const struct channel_id *, \
 					       const char *, bool, const u8 *), \
 			  typesafe_cb_postargs(void, void *, (billboardcb), \
@@ -184,7 +192,7 @@ void subd_send_fd(struct subd *sd, int fd);
 				      struct subd *,			\
 				      const u8 *, const int *),		\
 		       (replycb_data))
-void subd_req_(const tal_t *ctx,
+struct subd_req *subd_req_(const tal_t *ctx,
 	       struct subd *sd,
 	       const u8 *msg_out,
 	       int fd_out, size_t num_fds_in,
@@ -197,9 +205,10 @@ void subd_req_(const tal_t *ctx,
  * @channel: channel to release.
  *
  * If the subdaemon is not already shutting down, and it is a per-channel
- * subdaemon, this shuts it down.
+ * subdaemon, this shuts it down.  Don't call this directly, use
+ * channel_set_owner() or uncommitted_channel_release_subd().
  */
-void subd_release_channel(struct subd *owner, void *channel);
+void subd_release_channel(struct subd *owner, const void *channel);
 
 /**
  * subd_shutdown - try to politely shut down a subdaemon.
@@ -215,8 +224,20 @@ void subd_release_channel(struct subd *owner, void *channel);
  */
 struct subd *subd_shutdown(struct subd *subd, unsigned int seconds);
 
+/**
+ * subd_shutdown_remaining - kill all remaining (per-peer) subds
+ * @ld: lightningd
+ *
+ * They should already be exiting (since we shutdown hsmd), but
+ * make sure they have.
+ */
+void subd_shutdown_remaining(struct lightningd *ld);
+
 /* Ugly helper to get full pathname of the current binary. */
 const char *find_my_abspath(const tal_t *ctx, const char *argv0);
+
+/* lightningd captures SIGCHLD and waits, but so does subd. */
+void maybe_subd_child(struct lightningd *ld, int childpid, int wstatus);
 
 #if DEVELOPER
 char *opt_subd_dev_disconnect(const char *optarg, struct lightningd *ld);

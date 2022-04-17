@@ -1,10 +1,10 @@
-lightning-listfunds -- Command showing all funds currently managed by the c-lightning node
+lightning-listfunds -- Command showing all funds currently managed by the Core Lightning node
 ==========================================================================================
 
 SYNOPSIS
 --------
 
-**listfunds** \[*spent*\]
+**listfunds** [*spent*]
 
 DESCRIPTION
 -----------
@@ -37,7 +37,7 @@ On success, an object is returned, containing:
     - **reserved_to_block** (u32): Block height where reservation will expire
 - **channels** (array of objects):
   - **peer_id** (pubkey): the peer with which the channel is opened
-  - **our_amount_msat** (msat): available satoshis on our node’s end of the channel
+  - **our_amount_msat** (msat): available satoshis on our node's end of the channel
   - **amount_msat** (msat): total channel value
   - **funding_txid** (txid): funding transaction id
   - **funding_output** (u32): the 0-based index of the output in the funding transaction
@@ -67,4 +67,4 @@ RESOURCES
 
 Main web site: <https://github.com/ElementsProject/lightning>
 
-[comment]: # ( SHA256STAMP:7e2ee47b9e35c222ee8b671745990800feaba771cf60fbe8390c2afd040e878f)
+[comment]: # ( SHA256STAMP:959d54ed855f9f5d64148f5acf4a0bbb4bc1503e610ddae5ab4c04fd397af0b3)

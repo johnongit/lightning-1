@@ -50,6 +50,10 @@ struct channel_inflight {
 	u32 lease_chan_max_msat;
 	u16 lease_chan_max_ppt;
 	u32 lease_blockheight_start;
+
+	/* We save this data so we can do nice accounting;
+	 * on the channel we slot it into the 'push' field */
+	struct amount_msat lease_fee;
 };
 
 struct open_attempt {
@@ -63,6 +67,9 @@ struct open_attempt {
 	struct command *cmd;
 	struct amount_sat funding;
 	const u8 *our_upfront_shutdown_script;
+
+	/* First msg to send to dualopend (to make it create channel) */
+	const u8 *open_msg;
 };
 
 struct channel {
@@ -192,11 +199,16 @@ struct channel {
 	 * peer via option_data_loss_protect? */
 	const struct pubkey *future_per_commitment_point;
 
+	/* Min/max htlc amount allowed in channel. */
+	struct amount_msat htlc_minimum_msat, htlc_maximum_msat;
+
 	/* Feerate per channel */
 	u32 feerate_base, feerate_ppm;
-	/* But allow these feerates up until this time. */
+
+	/* But allow these feerates/htlcs up until this time. */
 	struct timeabs old_feerate_timeout;
 	u32 old_feerate_base, old_feerate_ppm;
+	struct amount_msat old_htlc_minimum_msat, old_htlc_maximum_msat;
 
 	/* If they used option_upfront_shutdown_script. */
 	const u8 *remote_upfront_shutdown_script;
@@ -233,6 +245,9 @@ struct channel {
 	u32 lease_chan_max_msat;
 	/* Lease commited max part per thousandth channel fee (ppm * 1000) */
 	u16 lease_chan_max_ppt;
+
+	/* Latest channel_update, for use in error messages. */
+	u8 *channel_update;
 };
 
 /* For v2 opens, a channel that has not yet been committed/saved to disk */
@@ -302,7 +317,9 @@ struct channel *new_channel(struct peer *peer, u64 dbid,
 			    u32 lease_expiry,
 			    secp256k1_ecdsa_signature *lease_commit_sig STEALS,
 			    u32 lease_chan_max_msat,
-			    u16 lease_chan_max_ppt);
+			    u16 lease_chan_max_ppt,
+			    struct amount_msat htlc_minimum_msat,
+			    struct amount_msat htlc_maximum_msat);
 
 /* new_inflight - Create a new channel_inflight for a channel */
 struct channel_inflight *
@@ -318,7 +335,8 @@ new_inflight(struct channel *channel,
 	     const secp256k1_ecdsa_signature *lease_commit_sig,
 	     const u32 lease_chan_max_msat,
 	     const u16 lease_chan_max_ppt,
-	     const u32 lease_blockheight_start);
+	     const u32 lease_blockheight_start,
+	     const struct amount_msat lease_fee);
 
 /* Given a txid, find an inflight channel stub. Returns NULL if none found */
 struct channel_inflight *channel_inflight_find(struct channel *channel,
@@ -367,28 +385,15 @@ void channel_set_state(struct channel *channel,
 
 const char *channel_change_state_reason_str(enum state_change reason);
 
+/* Find a channel which is not onchain, if any: sets *others if there
+ * is more than one. */
+struct channel *peer_any_active_channel(struct peer *peer, bool *others);
+
 /* Find a channel which is not yet saved to disk */
-struct channel *peer_unsaved_channel(struct peer *peer);
-
-/* Find a channel which is not onchain, if any */
-struct channel *peer_active_channel(struct peer *peer);
-
-/* Find a channel which is in state CHANNELD_NORMAL, if any */
-struct channel *peer_normal_channel(struct peer *peer);
-
-/* Get active channel for peer, optionally any uncommitted_channel. */
-struct channel *active_channel_by_id(struct lightningd *ld,
-				     const struct node_id *id,
-				     struct uncommitted_channel **uc);
-
-/* Get unsaved channel for peer */
-struct channel *unsaved_channel_by_id(struct lightningd *ld,
-				      const struct node_id *id);
+struct channel *peer_any_unsaved_channel(struct peer *peer, bool *others);
 
 struct channel *channel_by_dbid(struct lightningd *ld, const u64 dbid);
 
-struct channel *active_channel_by_scid(struct lightningd *ld,
-				       const struct short_channel_id *scid);
 struct channel *any_channel_by_scid(struct lightningd *ld,
 				    const struct short_channel_id *scid);
 
@@ -399,6 +404,10 @@ struct channel *channel_by_cid(struct lightningd *ld,
 /* Find this channel within peer */
 struct channel *find_channel_by_id(const struct peer *peer,
 				   const struct channel_id *cid);
+
+/* Find this channel within peer */
+struct channel *find_channel_by_scid(const struct peer *peer,
+				     const struct short_channel_id *scid);
 
 void channel_set_last_tx(struct channel *channel,
 			 struct bitcoin_tx *tx,
@@ -466,4 +475,7 @@ void channel_set_billboard(struct channel *channel, bool perm,
 struct htlc_in *channel_has_htlc_in(struct channel *channel);
 struct htlc_out *channel_has_htlc_out(struct channel *channel);
 
+const u8 *get_channel_update(struct channel *channel);
+
+struct amount_msat htlc_max_possible_send(const struct channel *channel);
 #endif /* LIGHTNING_LIGHTNINGD_CHANNEL_H */

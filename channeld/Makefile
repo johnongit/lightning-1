@@ -4,6 +4,7 @@ CHANNELD_HEADERS :=			\
 	channeld/full_channel_error_names_gen.h	\
 	channeld/channeld_wiregen.h		\
 	channeld/channeld_htlc.h		\
+	channeld/channeld.h			\
 	channeld/commit_tx.h			\
 	channeld/full_channel.h			\
 	channeld/full_channel_error.h		\
@@ -40,19 +41,17 @@ CHANNELD_COMMON_OBJS :=				\
 	common/channel_config.o			\
 	common/channel_id.o			\
 	common/channel_type.o			\
-	common/crypto_state.o			\
-	common/crypto_sync.o			\
 	common/cryptomsg.o			\
 	common/daemon.o				\
 	common/daemon_conn.o			\
 	common/derive_basepoints.o		\
-	common/dev_disconnect.o			\
 	common/ecdh_hsmd.o			\
 	common/features.o			\
 	common/fee_states.o			\
-	common/status_wiregen.o			\
-	common/peer_status_wiregen.o		\
 	common/gossip_rcvd_filter.o		\
+	common/peer_io.o			\
+	common/peer_status_wiregen.o		\
+	common/status_wiregen.o			\
 	common/gossip_store.o			\
 	common/hmac.o				\
 	common/htlc_state.o			\
@@ -74,6 +73,7 @@ CHANNELD_COMMON_OBJS :=				\
 	common/per_peer_state.o			\
 	common/permute_tx.o			\
 	common/ping.o				\
+	common/psbt_keypath.o		\
 	common/psbt_open.o			\
 	common/private_channel_announcement.o	\
 	common/pseudorand.o			\

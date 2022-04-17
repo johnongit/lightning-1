@@ -4,7 +4,7 @@ lightning-listchannels -- Command to query active lightning channels in the enti
 SYNOPSIS
 --------
 
-**listchannels** \[*short\_channel\_id*\] \[*source*\] \[*destination*\]
+**listchannels** [*short\_channel\_id*] [*source*] [*destination*]
 
 DESCRIPTION
 -----------
@@ -34,6 +34,7 @@ RETURN VALUE
 On success, an object containing **channels** is returned.  It is an array of objects, where each object contains:
 - **source** (pubkey): the source node
 - **destination** (pubkey): the destination node
+- **short_channel_id** (short_channel_id): short channel id of channel
 - **public** (boolean): true if this is announced (otherwise it must be our channel)
 - **amount_msat** (msat): the total capacity of this channel (always a whole number of satoshis)
 - **message_flags** (u8): as defined by BOLT #7
@@ -44,7 +45,7 @@ On success, an object containing **channels** is returned.  It is an array of ob
 - **fee_per_millionth** (u32): Proportional fee changed by *source* to use this channel, in parts-per-million
 - **delay** (u32): The number of blocks delay required by *source* to use this channel
 - **htlc_minimum_msat** (msat): The smallest payment *source* will allow via this channel
-- **features** (hex): BOLT #9 features bitmap for this channel
+- **features** (hex): BOLT #9 features bitmap for this channel in channel_announcement message
 - **htlc_maximum_msat** (msat, optional): The largest payment *source* will allow via this channel
 
 [comment]: # (GENERATE-FROM-SCHEMA-END)
@@ -77,4 +78,4 @@ Lightning RFC site
 -   BOLT \#7:
     <https://github.com/lightningnetwork/lightning-rfc/blob/master/07-routing-gossip.md>
 
-[comment]: # ( SHA256STAMP:c2ebd6407a66ad5f67b5fd933552a468e306b1fed7868f92985c24e321861fae)
+[comment]: # ( SHA256STAMP:e27d51a95411739ee10b082beaca55e33de4b2177b0e39df2223700c3141bc02)

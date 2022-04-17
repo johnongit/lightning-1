@@ -9,6 +9,7 @@
 #define HSM_FD 3
 /* connectd asks us for help finding nodes, and gossip fds for new peers */
 #define CONNECTD_FD 4
+#define CONNECTD2_FD 5
 
 struct chan;
 struct channel_update_timestamps;
@@ -44,10 +45,17 @@ struct daemon {
 	u8 rgb[3];
 
 	/* What addresses we can actually announce. */
-	struct wireaddr *announcable;
+	struct wireaddr *announceable;
 
-	/* Timer until we can send a new node_announcement */
+	/* verified remote_addr as reported by recent peers */
+	struct wireaddr *remote_addr_v4;
+	struct wireaddr *remote_addr_v6;
+
+	/* Timer until we can send an updated node_announcement */
 	struct oneshot *node_announce_timer;
+
+	/* Timer until we should force a new new node_announcement */
+	struct oneshot *node_announce_regen_timer;
 
 	/* Channels we have an announce for, but aren't deep enough. */
 	struct short_channel_id *deferred_txouts;
@@ -60,6 +68,9 @@ struct daemon {
 
 	/* The channel lease rates we're advertising */
 	const struct lease_rates *rates;
+
+	/* Any of our channel_updates we're deferring. */
+	struct list_head deferred_updates;
 };
 
 struct range_query_reply {
@@ -104,9 +115,6 @@ struct peer {
 	void (*query_channel_range_cb)(struct peer *peer,
 				       u32 first_blocknum, u32 number_of_blocks,
 				       const struct range_query_reply *replies);
-
-	/* The daemon_conn used to queue messages to/from the peer. */
-	struct daemon_conn *dc;
 };
 
 /* Search for a peer. */

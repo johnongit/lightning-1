@@ -28,10 +28,9 @@ bool blinding_next_pubkey(const struct pubkey *pk UNNEEDED,
 			  const struct sha256 *h UNNEEDED,
 			  struct pubkey *next UNNEEDED)
 { fprintf(stderr, "blinding_next_pubkey called!\n"); abort(); }
-/* Generated stub for daemon_conn_read_next */
-struct io_plan *daemon_conn_read_next(struct io_conn *conn UNNEEDED,
-				      struct daemon_conn *dc UNNEEDED)
-{ fprintf(stderr, "daemon_conn_read_next called!\n"); abort(); }
+/* Generated stub for daemon_conn_send */
+void daemon_conn_send(struct daemon_conn *dc UNNEEDED, const u8 *msg UNNEEDED)
+{ fprintf(stderr, "daemon_conn_send called!\n"); abort(); }
 /* Generated stub for daemon_conn_wake */
 void daemon_conn_wake(struct daemon_conn *dc UNNEEDED)
 { fprintf(stderr, "daemon_conn_wake called!\n"); abort(); }
@@ -52,15 +51,18 @@ void ecdh(const struct pubkey *point UNNEEDED, struct secret *ss UNNEEDED)
 /* Generated stub for find_peer */
 struct peer *find_peer(struct daemon *daemon UNNEEDED, const struct node_id *id UNNEEDED)
 { fprintf(stderr, "find_peer called!\n"); abort(); }
-/* Generated stub for fmt_wireaddr_without_port */
-char *fmt_wireaddr_without_port(const tal_t *ctx UNNEEDED, const struct wireaddr *a UNNEEDED)
-{ fprintf(stderr, "fmt_wireaddr_without_port called!\n"); abort(); }
+/* Generated stub for force_node_announce_rexmit */
+void force_node_announce_rexmit(struct routing_state *rstate UNNEEDED, struct node *node UNNEEDED)
+{ fprintf(stderr, "force_node_announce_rexmit called!\n"); abort(); }
 /* Generated stub for fromwire_gossipd_dev_set_max_scids_encode_size */
 bool fromwire_gossipd_dev_set_max_scids_encode_size(const void *p UNNEEDED, u32 *max UNNEEDED)
 { fprintf(stderr, "fromwire_gossipd_dev_set_max_scids_encode_size called!\n"); abort(); }
 /* Generated stub for fromwire_gossipd_local_channel_update */
-bool fromwire_gossipd_local_channel_update(const void *p UNNEEDED, struct short_channel_id *short_channel_id UNNEEDED, bool *disable UNNEEDED, u16 *cltv_expiry_delta UNNEEDED, struct amount_msat *htlc_minimum_msat UNNEEDED, u32 *fee_base_msat UNNEEDED, u32 *fee_proportional_millionths UNNEEDED, struct amount_msat *htlc_maximum_msat UNNEEDED)
+bool fromwire_gossipd_local_channel_update(const void *p UNNEEDED, struct node_id *id UNNEEDED, struct short_channel_id *short_channel_id UNNEEDED, bool *disable UNNEEDED, u16 *cltv_expiry_delta UNNEEDED, struct amount_msat *htlc_minimum_msat UNNEEDED, u32 *fee_base_msat UNNEEDED, u32 *fee_proportional_millionths UNNEEDED, struct amount_msat *htlc_maximum_msat UNNEEDED)
 { fprintf(stderr, "fromwire_gossipd_local_channel_update called!\n"); abort(); }
+/* Generated stub for fromwire_gossipd_used_local_channel_update */
+bool fromwire_gossipd_used_local_channel_update(const void *p UNNEEDED, struct short_channel_id *scid UNNEEDED)
+{ fprintf(stderr, "fromwire_gossipd_used_local_channel_update called!\n"); abort(); }
 /* Generated stub for fromwire_hsmd_cupdate_sig_reply */
 bool fromwire_hsmd_cupdate_sig_reply(const tal_t *ctx UNNEEDED, const void *p UNNEEDED, u8 **cu UNNEEDED)
 { fprintf(stderr, "fromwire_hsmd_cupdate_sig_reply called!\n"); abort(); }
@@ -117,9 +119,6 @@ struct oneshot *new_reltimer_(struct timers *timers UNNEEDED,
 			      struct timerel expire UNNEEDED,
 			      void (*cb)(void *) UNNEEDED, void *arg UNNEEDED)
 { fprintf(stderr, "new_reltimer_ called!\n"); abort(); }
-/* Generated stub for notleak_ */
-void *notleak_(void *ptr UNNEEDED, bool plus_children UNNEEDED)
-{ fprintf(stderr, "notleak_ called!\n"); abort(); }
 /* Generated stub for peer_supplied_good_gossip */
 void peer_supplied_good_gossip(struct peer *peer UNNEEDED, size_t amount UNNEEDED)
 { fprintf(stderr, "peer_supplied_good_gossip called!\n"); abort(); }
@@ -130,9 +129,6 @@ void queue_peer_from_store(struct peer *peer UNNEEDED,
 /* Generated stub for queue_peer_msg */
 void queue_peer_msg(struct peer *peer UNNEEDED, const u8 *msg TAKES UNNEEDED)
 { fprintf(stderr, "queue_peer_msg called!\n"); abort(); }
-/* Generated stub for reltimer_arg */
-void *reltimer_arg(struct oneshot *t UNNEEDED)
-{ fprintf(stderr, "reltimer_arg called!\n"); abort(); }
 /* Generated stub for status_failed */
 void status_failed(enum status_failreason code UNNEEDED,
 		   const char *fmt UNNEEDED, ...)
@@ -143,6 +139,9 @@ void status_fmt(enum log_level level UNNEEDED,
 		const char *fmt UNNEEDED, ...)
 
 { fprintf(stderr, "status_fmt called!\n"); abort(); }
+/* Generated stub for towire_gossipd_got_local_channel_update */
+u8 *towire_gossipd_got_local_channel_update(const tal_t *ctx UNNEEDED, const struct short_channel_id *scid UNNEEDED, const u8 *channel_update UNNEEDED)
+{ fprintf(stderr, "towire_gossipd_got_local_channel_update called!\n"); abort(); }
 /* Generated stub for towire_hsmd_cupdate_sig_req */
 u8 *towire_hsmd_cupdate_sig_req(const tal_t *ctx UNNEEDED, const u8 *cu UNNEEDED)
 { fprintf(stderr, "towire_hsmd_cupdate_sig_req called!\n"); abort(); }
@@ -154,9 +153,6 @@ u8 *towire_warningfmt(const tal_t *ctx UNNEEDED,
 		      const struct channel_id *channel UNNEEDED,
 		      const char *fmt UNNEEDED, ...)
 { fprintf(stderr, "towire_warningfmt called!\n"); abort(); }
-/* Generated stub for towire_wireaddr */
-void towire_wireaddr(u8 **pptr UNNEEDED, const struct wireaddr *addr UNNEEDED)
-{ fprintf(stderr, "towire_wireaddr called!\n"); abort(); }
 /* Generated stub for wire_sync_read */
 u8 *wire_sync_read(const tal_t *ctx UNNEEDED, int fd UNNEEDED)
 { fprintf(stderr, "wire_sync_read called!\n"); abort(); }

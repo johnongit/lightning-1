@@ -17,6 +17,7 @@ SUPPRESS_OUTPUT :=
 endif
 
 DISTRO=$(shell lsb_release -is 2>/dev/null || echo unknown)-$(shell lsb_release -rs 2>/dev/null || echo unknown)
+# Changing this could break installs!
 PKGNAME = c-lightning
 
 # We use our own internal ccan copy.
@@ -24,7 +25,7 @@ CCANDIR := ccan
 
 # Where we keep the BOLT RFCs
 BOLTDIR := ../lightning-rfc/
-DEFAULT_BOLTVERSION := 498f104fd399488c77f449d05cb21c0b604636a2
+DEFAULT_BOLTVERSION := e60d594abf436e768116684080997a8d4f960263
 # Can be overridden on cmdline.
 BOLTVERSION := $(DEFAULT_BOLTVERSION)
 
@@ -170,6 +171,7 @@ CCAN_HEADERS :=						\
 	$(CCANDIR)/ccan/endian/endian.h			\
 	$(CCANDIR)/ccan/err/err.h			\
 	$(CCANDIR)/ccan/fdpass/fdpass.h			\
+	$(CCANDIR)/ccan/graphql/graphql.h		\
 	$(CCANDIR)/ccan/htable/htable.h			\
 	$(CCANDIR)/ccan/htable/htable_type.h		\
 	$(CCANDIR)/ccan/ilog/ilog.h			\
@@ -226,9 +228,12 @@ WIRE_GEN_DEPS := $(WIRE_GEN) $(wildcard tools/gen/*_template)
 # These are filled by individual Makefiles
 ALL_PROGRAMS :=
 ALL_TEST_PROGRAMS :=
+ALL_TEST_GEN :=
 ALL_FUZZ_TARGETS :=
 ALL_C_SOURCES :=
 ALL_C_HEADERS := header_versions_gen.h version_gen.h
+# Extra (non C) targets that should be built by default.
+DEFAULT_TARGETS :=
 
 CPPFLAGS += -DBINTOPKGLIBEXECDIR="\"$(shell sh tools/rel.sh $(bindir) $(pkglibexecdir))\""
 CFLAGS = $(CPPFLAGS) $(CWARNFLAGS) $(CDEBUGFLAGS) $(COPTFLAGS) -I $(CCANDIR) $(EXTERNAL_INCLUDE_FLAGS) -I . -I/usr/local/include $(SQLITE3_CFLAGS) $(POSTGRES_INCLUDE) $(FEATURES) $(COVFLAGS) $(DEV_CFLAGS) -DSHACHAIN_BITS=48 -DJSMN_PARENT_LINKS $(PIE_CFLAGS) $(COMPAT_CFLAGS) -DBUILD_ELEMENTS=1
@@ -259,7 +264,7 @@ ifeq ($(HAVE_POSTGRES),1)
 LDLIBS += $(POSTGRES_LDLIBS)
 endif
 
-default: show-flags all-programs all-test-programs doc-all
+default: show-flags all-programs all-test-programs doc-all default-targets
 
 ifneq ($(SUPPRESS_GENERATION),1)
 FORCE = FORCE
@@ -322,10 +327,18 @@ endif
 		$(call VERBOSE,"printgen $@",tools/generate-wire.py -s -P --page impl $($@_args) ${@:.c=.h} `basename $< .csv | sed 's/_exp_/_/'` < $< > $@ && $(call SHA256STAMP,//,)); \
 	fi
 
+RUST_PROFILE ?= debug
+ifneq ($(RUST_PROFILE),debug)
+CARGO_OPTS := --profile=$(RUST_PROFILE) --quiet
+else
+CARGO_OPTS := --quiet
+endif
+
 include external/Makefile
 include bitcoin/Makefile
 include common/Makefile
 include wire/Makefile
+include db/Makefile
 include hsmd/Makefile
 include gossipd/Makefile
 include openingd/Makefile
@@ -343,6 +356,21 @@ include tests/plugins/Makefile
 include contrib/libhsmd_python/Makefile
 ifneq ($(FUZZING),0)
 	include tests/fuzz/Makefile
+endif
+ifneq ($(RUST),0)
+	include cln-rpc/Makefile
+	include cln-grpc/Makefile
+
+GRPC_GEN = tests/node_pb2.py \
+	tests/node_pb2_grpc.py \
+	tests/primitives_pb2.py
+
+ALL_TEST_GEN += $(GRPC_GEN)
+
+$(GRPC_GEN): cln-grpc/proto/node.proto cln-grpc/proto/primitives.proto
+	python -m grpc_tools.protoc -I cln-grpc/proto cln-grpc/proto/node.proto --python_out=tests/ --grpc_python_out=tests/ --experimental_allow_proto3_optional
+	python -m grpc_tools.protoc -I cln-grpc/proto cln-grpc/proto/primitives.proto --python_out=tests/ --grpc_python_out=tests/ --experimental_allow_proto3_optional
+
 endif
 
 # We make pretty much everything depend on these.
@@ -409,7 +437,7 @@ else
 endif
 endif
 
-pytest: $(ALL_PROGRAMS) $(ALL_TEST_PROGRAMS)
+pytest: $(ALL_PROGRAMS) $(DEFAULT_TARGETS) $(ALL_TEST_PROGRAMS) $(ALL_TEST_GEN)
 ifeq ($(PYTEST),)
 	@echo "py.test is required to run the integration tests, please install using 'pip3 install -r requirements.txt', and rerun 'configure'."
 	exit 1
@@ -481,7 +509,7 @@ check-python-flake8:
 	@# E731 do not assign a lambda expression, use a def
 	@# W503: line break before binary operator
 	@# E741: ambiguous variable name
-	@flake8 --ignore=E501,E731,E741,W503 --exclude $(shell echo ${PYTHON_GENERATED} | sed 's/ \+/,/g') ${PYSRC}
+	@flake8 --ignore=E501,E731,E741,W503,F541 --exclude $(shell echo ${PYTHON_GENERATED} | sed 's/ \+/,/g') ${PYSRC}
 
 check-pytest-pyln-proto:
 	PATH=$(PYLN_PATH) PYTHONPATH=$(MY_CHECK_PYTHONPATH) $(PYTEST) contrib/pyln-proto/tests/
@@ -546,6 +574,9 @@ ncc: ${TARGET_DIR}/libwally-core-build/src/libwallycore.la
 TAGS:
 	$(RM) TAGS; find * -name test -type d -prune -o -name '*.[ch]' -print -o -name '*.py' -print | xargs etags --append
 
+tags:
+	$(RM) tags; find * -name test -type d -prune -o -name '*.[ch]' -print -o -name '*.py' -print | xargs ctags --append
+
 ccan/ccan/cdump/tools/cdump-enumstr: ccan/ccan/cdump/tools/cdump-enumstr.o $(CDUMP_OBJS) $(CCAN_OBJS)
 
 ALL_PROGRAMS += ccan/ccan/cdump/tools/cdump-enumstr
@@ -603,6 +634,7 @@ update-ccan:
 # Now ALL_PROGRAMS is fully populated, we can expand it.
 all-programs: $(ALL_PROGRAMS)
 all-test-programs: $(ALL_TEST_PROGRAMS) $(ALL_FUZZ_TARGETS)
+default-targets: $(DEFAULT_TARGETS)
 
 distclean: clean
 	$(RM) ccan/config.h config.vars
@@ -626,6 +658,7 @@ clean: obsclean
 	find . -name '*gcda' -delete
 	find . -name '*gcno' -delete
 	find . -name '*.nccout' -delete
+	if [ "${RUST}" -eq "1" ]; then cargo clean; fi
 
 # These must both be enabled for update-mocks
 ifeq ($(DEVELOPER)$(EXPERIMENTAL_FEATURES),11)

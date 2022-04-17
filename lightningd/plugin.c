@@ -83,7 +83,6 @@ struct plugins *plugins_new(const tal_t *ctx, struct log_book *log_book,
 	p->startup = true;
 	p->plugin_cmds = tal_arr(p, struct plugin_command *, 0);
 	p->blacklist = tal_arr(p, const char *, 0);
-	p->shutdown = false;
 	p->plugin_idx = 0;
 #if DEVELOPER
 	p->dev_builtin_plugins_unimportant = false;
@@ -213,7 +212,7 @@ static void destroy_plugin(struct plugin *p)
 		check_plugins_manifests(p->plugins);
 
 	/* Daemon shutdown overrules plugin's importance; aborts init checks */
-	if (p->plugins->shutdown) {
+	if (p->plugins->ld->state == LD_STATE_SHUTDOWN) {
 		/* But return if this was the last plugin! */
 		if (list_empty(&p->plugins->plugins))
 			io_break(destroy_plugin);
@@ -786,7 +785,7 @@ static void plugin_conn_finish(struct io_conn *conn, struct plugin *plugin)
 {
 	/* This is expected at shutdown of course. */
 	plugin_kill(plugin,
-		    plugin->plugins->shutdown
+		    plugin->plugins->ld->state == LD_STATE_SHUTDOWN
 		    ? LOG_DBG : LOG_INFORM,
 		    "exited %s", state_desc(plugin));
 }
@@ -2088,18 +2087,12 @@ void plugins_set_builtin_plugins_dir(struct plugins *plugins,
 				NULL, NULL);
 }
 
-static void plugin_shutdown_timeout(struct lightningd *ld)
-{
-	io_break(plugin_shutdown_timeout);
-}
-
 void shutdown_plugins(struct lightningd *ld)
 {
 	struct plugin *p, *next;
 
-	/* Don't complain about important plugins vanishing and
-	 * crash any attempt to write to db. */
-	ld->plugins->shutdown = true;
+	/* The next io_loop does not need db access, close it. */
+	ld->wallet->db = tal_free(ld->wallet->db);
 
 	/* Tell them all to shutdown; if they care. */
 	list_for_each_safe(&ld->plugins->plugins, p, next, list) {
@@ -2110,20 +2103,16 @@ void shutdown_plugins(struct lightningd *ld)
 
 	/* If anyone was interested in shutdown, give them time. */
 	if (!list_empty(&ld->plugins->plugins)) {
-		struct timers *orig_timers, *timer;
+		struct timers *timer;
+		struct timer *expired;
 
 		/* 30 seconds should do it, use a clean timers struct */
-		orig_timers = ld->timers;
 		timer = tal(NULL, struct timers);
 		timers_init(timer, time_mono());
-		new_reltimer(timer, timer, time_from_sec(30),
-				  plugin_shutdown_timeout, ld);
+		new_reltimer(timer, timer, time_from_sec(30), NULL, NULL);
 
-		ld->timers = timer;
-		void *ret = io_loop_with_timers(ld);
-		assert(ret == plugin_shutdown_timeout || ret == destroy_plugin);
-		ld->timers = orig_timers;
-		tal_free(timer);
+		void *ret = io_loop(timer, &expired);
+		assert(ret == NULL || ret == destroy_plugin);
 
 		/* Report and free remaining plugins. */
 		while (!list_empty(&ld->plugins->plugins)) {

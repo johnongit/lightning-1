@@ -5,6 +5,7 @@
 #include <lightningd/pay.h>
 #include <lightningd/plugin.h>
 
+struct balance_snapshot;
 struct onionreply;
 struct wally_psbt;
 
@@ -66,7 +67,8 @@ void notify_forward_event(struct lightningd *ld,
 			  const struct amount_msat *amount_out,
 			  enum forward_status state,
 			  enum onion_wire failcode,
-			  struct timeabs *resolved_time);
+			  struct timeabs *resolved_time,
+			  enum forward_style forward_style);
 
 void notify_sendpay_success(struct lightningd *ld,
 			    const struct wallet_payment *payment);
@@ -80,6 +82,9 @@ void notify_sendpay_failure(struct lightningd *ld,
 
 void notify_coin_mvt(struct lightningd *ld,
 		     const struct coin_mvt *mvt);
+
+void notify_balance_snapshot(struct lightningd *ld,
+			     const struct balance_snapshot *snap);
 
 void notify_openchannel_peer_sigs(struct lightningd *ld,
 				  const struct channel_id *cid,

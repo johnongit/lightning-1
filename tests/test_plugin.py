@@ -9,8 +9,8 @@ from utils import (
     DEVELOPER, only_one, sync_blockheight, TIMEOUT, wait_for, TEST_NETWORK,
     DEPRECATED_APIS, expected_peer_features, expected_node_features,
     expected_channel_features, account_balance,
-    check_coin_moves, first_channel_id, check_coin_moves_idx,
-    EXPERIMENTAL_FEATURES, EXPERIMENTAL_DUAL_FUND
+    check_coin_moves, first_channel_id, EXPERIMENTAL_DUAL_FUND,
+    mine_funding_to_announce
 )
 
 import ast
@@ -397,7 +397,8 @@ def test_pay_plugin(node_factory):
 
     # Make sure usage messages are present.
     msg = 'pay bolt11 [msatoshi] [label] [riskfactor] [maxfeepercent] '\
-          '[retry_for] [maxdelay] [exemptfee] [localofferid] [exclude]'
+          '[retry_for] [maxdelay] [exemptfee] [localofferid] [exclude] '\
+          '[maxfee] [description]'
     if DEVELOPER:
         msg += ' [use_shadow]'
     assert only_one(l1.rpc.help('pay')['help'])['command'] == msg
@@ -440,7 +441,7 @@ def test_plugin_connected_hook_chaining(node_factory):
     ])
 
     # FIXME: this error occurs *after* connection, so we connect then drop.
-    l3.daemon.wait_for_log(r"chan#1: peer_in WIRE_WARNING")
+    l3.daemon.wait_for_log(r"-connectd: peer_in WIRE_WARNING")
     l3.daemon.wait_for_log(r"You are in reject list")
 
     def check_disconnect():
@@ -449,6 +450,31 @@ def test_plugin_connected_hook_chaining(node_factory):
 
     wait_for(check_disconnect)
     assert not l1.daemon.is_in_log(f"peer_connected_logger_b {l3id}")
+
+
+@pytest.mark.developer("localhost remote_addr will be filtered without DEVELOEPR")
+def test_peer_connected_remote_addr(node_factory):
+    """This tests the optional tlv `remote_addr` being passed to a plugin.
+
+    The optional tlv `remote_addr` should only be visible to the initiator l1.
+    """
+    l1, l2 = node_factory.get_nodes(2, opts={'plugin': os.path.join(os.getcwd(), 'tests/plugins/peer_connected_logger_a.py')})
+    l1id = l1.info['id']
+    l2id = l2.info['id']
+
+    l1.connect(l2)
+    l1log = l1.daemon.wait_for_log(f"peer_connected_logger_a {l2id}")
+    l2log = l2.daemon.wait_for_log(f"peer_connected_logger_a {l1id}")
+
+    # the log entries are followed by the peer_connected payload as dict {} like:
+    # {'id': '022d223...', 'direction': 'out', 'addr': '127.0.0.1:35289',
+    #  'remote_addr': '127.0.0.1:59582', 'features': '8808226aa2'}
+    l1payload = eval(l1log[l1log.find('{'):])
+    l2payload = eval(l2log[l2log.find('{'):])
+
+    # check that l1 sees its remote_addr as l2 sees l1
+    assert(l1payload['remote_addr'] == l2payload['addr'])
+    assert(not l2payload.get('remote_addr'))  # l2 can't see a remote_addr
 
 
 def test_async_rpcmethod(node_factory, executor):
@@ -849,12 +875,9 @@ def test_channel_state_changed_unilateral(node_factory, bitcoind):
 
     The misc_notifications.py plugin logs `channel_state_changed` events.
     """
-    # FIXME: We can get warnings from unilteral changes, since we treat
-    # such errors a soft because LND.
     opts = {"plugin": os.path.join(os.getcwd(), "tests/plugins/misc_notifications.py"),
-            "allow_warning": True}
-    if EXPERIMENTAL_DUAL_FUND:
-        opts['may_reconnect'] = True
+            "allow_warning": True,
+            'may_reconnect': True}
 
     l1, l2 = node_factory.line_graph(2, opts=opts)
 
@@ -906,14 +929,24 @@ def test_channel_state_changed_unilateral(node_factory, bitcoind):
     assert(event2['cause'] == "user")
     assert(event2['message'] == "Forcibly closed by `close` command timeout")
 
-    # restart l1 early, as the test gets flaky when done after generate_block(100)
+    # restart l1 now, it will reconnect and l2 will send it an error.
     l1.restart()
     wait_for(lambda: len(l1.rpc.listpeers()['peers']) == 1)
     # check 'closer' on l2 while the peer is not yet forgotten
     assert(l2.rpc.listpeers()['peers'][0]['channels'][0]['closer'] == 'local')
     if EXPERIMENTAL_DUAL_FUND:
         l1.daemon.wait_for_log(r'Peer has reconnected, state')
-        l2.daemon.wait_for_log(r'Peer has reconnected, state')
+        l2.daemon.wait_for_log(r'Telling connectd to send error')
+
+    # l1 will receive error, and go into AWAITING_UNILATERAL
+    # FIXME: l2 should re-xmit shutdown, but it doesn't until it's mined :(
+    event1 = wait_for_event(l1)
+    # Doesn't have closer, since it blames the "protocol"?
+    assert 'closer' not in l1.rpc.listpeers()['peers'][0]['channels'][0]
+    assert(event1['old_state'] == "CHANNELD_NORMAL")
+    assert(event1['new_state'] == "AWAITING_UNILATERAL")
+    assert(event1['cause'] == "protocol")
+    assert(event1['message'] == "channeld: received ERROR error channel {}: Forcibly closed by `close` command timeout".format(cid))
 
     # settle the channel closure
     bitcoind.generate_block(100)
@@ -933,16 +966,11 @@ def test_channel_state_changed_unilateral(node_factory, bitcoind):
     event1 = wait_for_event(l1)
     assert(l1.rpc.listpeers()['peers'][0]['channels'][0]['closer'] == 'remote')
 
-    # check if l1 sees ONCHAIN reasons for his channel
-    assert(event1['old_state'] == "CHANNELD_NORMAL")
-    assert(event1['new_state'] == "AWAITING_UNILATERAL")
-    assert(event1['cause'] == "onchain")
-    assert(event1['message'] == "Funding transaction spent")
-    event1 = wait_for_event(l1)
     assert(event1['old_state'] == "AWAITING_UNILATERAL")
     assert(event1['new_state'] == "FUNDING_SPEND_SEEN")
     assert(event1['cause'] == "onchain")
     assert(event1['message'] == "Onchain funding spend")
+
     event1 = wait_for_event(l1)
     assert(event1['old_state'] == "FUNDING_SPEND_SEEN")
     assert(event1['new_state'] == "ONCHAIN")
@@ -1084,38 +1112,6 @@ def test_htlc_accepted_hook_direct_restart(node_factory, executor):
     f1.result()
 
 
-def test_htlc_accepted_hook_shutdown(node_factory, executor):
-    """Hooks of important-plugins are never removed and these plugins are kept
-       alive until after subdaemons are shutdown. Also tests shutdown notification.
-    """
-    l1, l2 = node_factory.line_graph(2, opts=[
-        {'may_reconnect': True, 'log-level': 'info'},
-        {'may_reconnect': True, 'log-level': 'debug',
-         'plugin': [os.path.join(os.getcwd(), 'tests/plugins/misc_notifications.py')],
-         'important-plugin': [os.path.join(os.getcwd(), 'tests/plugins/fail_htlcs.py')]}
-    ])
-
-    l2.rpc.plugin_stop(os.path.join(os.getcwd(), 'tests/plugins/misc_notifications.py'))
-    l2.daemon.wait_for_log(r'datastore success')
-    l2.rpc.plugin_start(os.path.join(os.getcwd(), 'tests/plugins/misc_notifications.py'))
-
-    i1 = l2.rpc.invoice(msatoshi=1000, label="inv1", description="desc")['bolt11']
-
-    # fail_htlcs.py makes payment fail
-    with pytest.raises(RpcError):
-        l1.rpc.pay(i1)
-
-    f_stop = executor.submit(l2.rpc.stop)
-    l2.daemon.wait_for_log(r'plugin-misc_notifications.py: delaying shutdown with 5s')
-
-    # Should still fail htlc while shutting down
-    with pytest.raises(RpcError):
-        l1.rpc.pay(i1)
-
-    l2.daemon.wait_for_log(r'datastore failed')
-    f_stop.result()
-
-
 @pytest.mark.developer("without DEVELOPER=1, gossip v slow")
 def test_htlc_accepted_hook_forward_restart(node_factory, executor):
     """l2 restarts while it is pondering what to do with an HTLC.
@@ -1128,7 +1124,7 @@ def test_htlc_accepted_hook_forward_restart(node_factory, executor):
     ], wait_for_announce=True)
 
     i1 = l3.rpc.invoice(msatoshi=1000, label="direct", description="desc")['bolt11']
-    f1 = executor.submit(l1.rpc.dev_pay, i1, use_shadow=False)
+    f1 = executor.submit(l1.dev_pay, i1, use_shadow=False)
 
     l2.daemon.wait_for_log(r'Holding onto an incoming htlc for 10 seconds')
 
@@ -1198,7 +1194,7 @@ def test_invoice_payment_notification(node_factory):
     preimage = '1' * 64
     label = "a_descriptive_label"
     inv1 = l2.rpc.invoice(msats, label, 'description', preimage=preimage)
-    l1.rpc.dev_pay(inv1['bolt11'], use_shadow=False)
+    l1.dev_pay(inv1['bolt11'], use_shadow=False)
 
     l2.daemon.wait_for_log(r"Received invoice_payment event for label {},"
                            " preimage {}, and amount of {}msat"
@@ -1553,7 +1549,7 @@ def test_plugin_feature_announce(node_factory):
 
     # Check the featurebits we've set in the `init` message from
     # feature-test.py.
-    assert l1.daemon.is_in_log(r'\[OUT\] 001000022200....{}'
+    assert l1.daemon.is_in_log(r'\[OUT\] 001000022100....{}'
                                .format(expected_peer_features(extra=[201] + extra)))
 
     # Check the invoice featurebit we set in feature-test.py
@@ -1754,7 +1750,9 @@ def test_hook_crash(node_factory, executor, bitcoind):
             n.rpc.plugin_start(p)
         l1.openchannel(n, 10**6, confirm=False, wait_for_announce=False)
 
-    bitcoind.generate_block(6)
+    # Mine final openchannel tx first.
+    sync_blockheight(bitcoind, [l1] + nodes)
+    mine_funding_to_announce(bitcoind, [l1] + nodes, wait_for_mempool=1)
 
     wait_for(lambda: len(l1.rpc.listchannels()['channels']) == 2 * len(perm))
 
@@ -1917,116 +1915,39 @@ def test_plugin_fail(node_factory):
 @pytest.mark.openchannel('v1')
 @pytest.mark.openchannel('v2')
 def test_coin_movement_notices(node_factory, bitcoind, chainparams):
-    """Verify that coin movements are triggered correctly.
-    """
+    """Verify that channel coin movements are triggered correctly.  """
 
     l1_l2_mvts = [
-        {'type': 'chain_mvt', 'credit': 0, 'debit': 0, 'tag': 'deposit'},
-        {'type': 'channel_mvt', 'credit': 100001001, 'debit': 0, 'tag': 'routed'},
-        {'type': 'channel_mvt', 'credit': 0, 'debit': 50000000, 'tag': 'routed'},
-        {'type': 'channel_mvt', 'credit': 100000000, 'debit': 0, 'tag': 'invoice'},
-        {'type': 'channel_mvt', 'credit': 0, 'debit': 50000000, 'tag': 'invoice'},
-        {'type': 'chain_mvt', 'credit': 0, 'debit': 1, 'tag': 'chain_fees'},
-        {'type': 'chain_mvt', 'credit': 0, 'debit': 100001000, 'tag': 'withdrawal'},
+        {'type': 'chain_mvt', 'credit': 0, 'debit': 0, 'tags': ['channel_open']},
+        {'type': 'channel_mvt', 'credit': 100001001, 'debit': 0, 'tags': ['routed'], 'fees': '1001msat'},
+        {'type': 'channel_mvt', 'credit': 0, 'debit': 50000000, 'tags': ['routed'], 'fees': '501msat'},
+        {'type': 'channel_mvt', 'credit': 100000000, 'debit': 0, 'tags': ['invoice'], 'fees': '0msat'},
+        {'type': 'channel_mvt', 'credit': 0, 'debit': 50000000, 'tags': ['invoice'], 'fees': '0msat'},
+        {'type': 'chain_mvt', 'credit': 0, 'debit': 100001001, 'tags': ['channel_close']},
     ]
-    if chainparams['elements']:
-        l2_l3_mvts = [
-            {'type': 'chain_mvt', 'credit': 1000000000, 'debit': 0, 'tag': 'deposit'},
-            {'type': 'channel_mvt', 'credit': 0, 'debit': 100000000, 'tag': 'routed'},
-            {'type': 'channel_mvt', 'credit': 50000501, 'debit': 0, 'tag': 'routed'},
-            {'type': 'chain_mvt', 'credit': 0, 'debit': 4271501, 'tag': 'chain_fees'},
-            {'type': 'chain_mvt', 'credit': 0, 'debit': 945729000, 'tag': 'withdrawal'},
-        ]
 
-        l2_wallet_mvts = [
-            {'type': 'chain_mvt', 'credit': 2000000000, 'debit': 0, 'tag': 'deposit'},
-            {'type': 'chain_mvt', 'credit': 0, 'debit': 0, 'tag': 'spend_track'},
-            [
-                {'type': 'chain_mvt', 'credit': 0, 'debit': 991908000, 'tag': 'withdrawal'},
-                {'type': 'chain_mvt', 'credit': 0, 'debit': 1000000000, 'tag': 'withdrawal'},
-            ],
-            {'type': 'chain_mvt', 'credit': 0, 'debit': 8092000, 'tag': 'chain_fees'},
-            {'type': 'chain_mvt', 'credit': 991908000, 'debit': 0, 'tag': 'deposit'},
-            {'type': 'chain_mvt', 'credit': 100001000, 'debit': 0, 'tag': 'deposit'},
-            {'type': 'chain_mvt', 'credit': 945729000, 'debit': 0, 'tag': 'deposit'},
-        ]
-    elif EXPERIMENTAL_FEATURES:
-        # option_anchor_outputs
-        l2_l3_mvts = [
-            {'type': 'chain_mvt', 'credit': 1000000000, 'debit': 0, 'tag': 'deposit'},
-            {'type': 'channel_mvt', 'credit': 0, 'debit': 100000000, 'tag': 'routed'},
-            {'type': 'channel_mvt', 'credit': 50000501, 'debit': 0, 'tag': 'routed'},
-            {'type': 'chain_mvt', 'credit': 0, 'debit': 2520501, 'tag': 'chain_fees'},
-            {'type': 'chain_mvt', 'credit': 0, 'debit': 947480000, 'tag': 'withdrawal'},
-        ]
+    l2_l3_mvts = [
+        {'type': 'chain_mvt', 'credit': 1000000000, 'debit': 0, 'tags': ['channel_open', 'opener']},
+        {'type': 'channel_mvt', 'credit': 0, 'debit': 100000000, 'tags': ['routed'], 'fees': '1001msat'},
+        {'type': 'channel_mvt', 'credit': 50000501, 'debit': 0, 'tags': ['routed'], 'fees': '501msat'},
+        {'type': 'chain_mvt', 'credit': 0, 'debit': 950000501, 'tags': ['channel_close']},
+    ]
 
-        l2_wallet_mvts = [
-            {'type': 'chain_mvt', 'credit': 2000000000, 'debit': 0, 'tag': 'deposit'},
-            {'type': 'chain_mvt', 'credit': 0, 'debit': 0, 'tag': 'spend_track'},
-            # Could go in either order
-            [
-                {'type': 'chain_mvt', 'credit': 0, 'debit': 995433000, 'tag': 'withdrawal'},
-                {'type': 'chain_mvt', 'credit': 0, 'debit': 1000000000, 'tag': 'withdrawal'},
-            ],
-            {'type': 'chain_mvt', 'credit': 0, 'debit': 4567000, 'tag': 'chain_fees'},
-            {'type': 'chain_mvt', 'credit': 995433000, 'debit': 0, 'tag': 'deposit'},
-            {'type': 'chain_mvt', 'credit': 100001000, 'debit': 0, 'tag': 'deposit'},
-            {'type': 'chain_mvt', 'credit': 947480000, 'debit': 0, 'tag': 'deposit'},
-        ]
-    else:
-        l2_l3_mvts = [
-            {'type': 'chain_mvt', 'credit': 1000000000, 'debit': 0, 'tag': 'deposit'},
-            {'type': 'channel_mvt', 'credit': 0, 'debit': 100000000, 'tag': 'routed'},
-            {'type': 'channel_mvt', 'credit': 50000501, 'debit': 0, 'tag': 'routed'},
-            {'type': 'chain_mvt', 'credit': 0, 'debit': 2520501, 'tag': 'chain_fees'},
-            {'type': 'chain_mvt', 'credit': 0, 'debit': 947480000, 'tag': 'withdrawal'},
-        ]
+    l3_l2_mvts = [
+        {'type': 'chain_mvt', 'credit': 0, 'debit': 0, 'tags': ['channel_open']},
+        {'type': 'channel_mvt', 'credit': 100000000, 'debit': 0, 'tags': ['invoice'], 'fees': '0msat'},
+        {'type': 'channel_mvt', 'credit': 0, 'debit': 50000501, 'tags': ['invoice'], 'fees': '501msat'},
+        {'type': 'chain_mvt', 'credit': 0, 'debit': 49999499, 'tags': ['channel_close']},
+    ]
 
-        l2_wallet_mvts = [
-            {'type': 'chain_mvt', 'credit': 2000000000, 'debit': 0, 'tag': 'deposit'},
-            {'type': 'chain_mvt', 'credit': 0, 'debit': 0, 'tag': 'spend_track'},
-            # Could go in either order
-            [
-                {'type': 'chain_mvt', 'credit': 0, 'debit': 995433000, 'tag': 'withdrawal'},
-                {'type': 'chain_mvt', 'credit': 0, 'debit': 1000000000, 'tag': 'withdrawal'},
-            ],
-            {'type': 'chain_mvt', 'credit': 0, 'debit': 4567000, 'tag': 'chain_fees'},
-            {'type': 'chain_mvt', 'credit': 995433000, 'debit': 0, 'tag': 'deposit'},
-            {'type': 'chain_mvt', 'credit': 100001000, 'debit': 0, 'tag': 'deposit'},
-            {'type': 'chain_mvt', 'credit': 947480000, 'debit': 0, 'tag': 'deposit'},
-        ]
-
+    coin_plugin = os.path.join(os.getcwd(), 'tests/plugins/coin_movements.py')
     l1, l2, l3 = node_factory.line_graph(3, opts=[
         {'may_reconnect': True},
-        {'may_reconnect': True, 'plugin': os.path.join(os.getcwd(), 'tests/plugins/coin_movements.py')},
-        {'may_reconnect': True},
+        {'may_reconnect': True, 'plugin': coin_plugin},
+        {'may_reconnect': True, 'plugin': coin_plugin},
     ], wait_for_announce=True)
 
-    # Special case for dual-funded channel opens
-    if l2.config('experimental-dual-fund'):
-        # option_anchor_outputs
-        l2_l3_mvts = [
-            {'type': 'chain_mvt', 'credit': 1000000000, 'debit': 0, 'tag': 'deposit'},
-            {'type': 'channel_mvt', 'credit': 0, 'debit': 100000000, 'tag': 'routed'},
-            {'type': 'channel_mvt', 'credit': 50000501, 'debit': 0, 'tag': 'routed'},
-            {'type': 'chain_mvt', 'credit': 0, 'debit': 2520501, 'tag': 'chain_fees'},
-            {'type': 'chain_mvt', 'credit': 0, 'debit': 947480000, 'tag': 'withdrawal'},
-        ]
-        l2_wallet_mvts = [
-            {'type': 'chain_mvt', 'credit': 2000000000, 'debit': 0, 'tag': 'deposit'},
-            {'type': 'chain_mvt', 'credit': 0, 'debit': 0, 'tag': 'spend_track'},
-            # Could go in either order
-            [
-                {'type': 'chain_mvt', 'credit': 0, 'debit': 995410000, 'tag': 'withdrawal'},
-                {'type': 'chain_mvt', 'credit': 0, 'debit': 1000000000, 'tag': 'withdrawal'},
-            ],
-            {'type': 'chain_mvt', 'credit': 0, 'debit': 4590000, 'tag': 'chain_fees'},
-            {'type': 'chain_mvt', 'credit': 995410000, 'debit': 0, 'tag': 'deposit'},
-            {'type': 'chain_mvt', 'credit': 100001000, 'debit': 0, 'tag': 'deposit'},
-            {'type': 'chain_mvt', 'credit': 947480000, 'debit': 0, 'tag': 'deposit'},
-        ]
-
-    bitcoind.generate_block(5)
+    mine_funding_to_announce(bitcoind, [l1, l2, l3])
     wait_for(lambda: len(l1.rpc.listchannels()['channels']) == 4)
     amount = 10**8
 
@@ -2095,16 +2016,16 @@ def test_coin_movement_notices(node_factory, bitcoind, chainparams):
     bitcoind.generate_block(6)
     sync_blockheight(bitcoind, [l2])
     l2.daemon.wait_for_log('{}.*FUNDING_TRANSACTION/FUNDING_OUTPUT->MUTUAL_CLOSE depth'.format(l3.info['id']))
+    l3.daemon.wait_for_log('Resolved FUNDING_TRANSACTION/FUNDING_OUTPUT by MUTUAL_CLOSE')
 
     # Ending channel balance should be zero
     assert account_balance(l2, chanid_1) == 0
     assert account_balance(l2, chanid_3) == 0
 
     # Verify we recorded all the movements we expect
+    check_coin_moves(l3, chanid_3, l3_l2_mvts, chainparams)
     check_coin_moves(l2, chanid_1, l1_l2_mvts, chainparams)
     check_coin_moves(l2, chanid_3, l2_l3_mvts, chainparams)
-    check_coin_moves(l2, 'wallet', l2_wallet_mvts, chainparams)
-    check_coin_moves_idx(l2)
 
 
 def test_3847_repro(node_factory, bitcoind):
@@ -2593,22 +2514,31 @@ plugin.run()
 
 
 def test_plugin_shutdown(node_factory):
-    """test 'shutdown' notification"""
+    """test 'shutdown' notifications, via `plugin stop` or via `stop`"""
+
     p = os.path.join(os.getcwd(), "tests/plugins/test_libplugin")
-    l1 = node_factory.get_node(options={'plugin': p})
+    p2 = os.path.join(os.getcwd(), 'tests/plugins/misc_notifications.py')
+    l1 = node_factory.get_node(options={'plugin': [p, p2]})
 
     l1.rpc.plugin_stop(p)
     l1.daemon.wait_for_log(r"test_libplugin: shutdown called")
     # FIXME: clean this up!
     l1.daemon.wait_for_log(r"test_libplugin: Killing plugin: exited during normal operation")
 
-    # Now try timeout.
+    # Via `plugin stop` it can make RPC calls before it (self-)terminates
+    l1.rpc.plugin_stop(p2)
+    l1.daemon.wait_for_log(r'misc_notifications.py: via plugin stop, datastore success')
+    l1.rpc.plugin_start(p2)
+
+    # Now try timeout via `plugin stop`
     l1.rpc.plugin_start(p, dont_shutdown=True)
     l1.rpc.plugin_stop(p)
     l1.daemon.wait_for_log(r"test_libplugin: shutdown called")
     l1.daemon.wait_for_log(r"test_libplugin: Timeout on shutdown: killing anyway")
 
-    # Now, should also shutdown on finish.
-    l1.rpc.plugin_start(p)
+    # Now, should also shutdown or timeout on finish, RPC calls then fail with error code -5
+    l1.rpc.plugin_start(p, dont_shutdown=True)
     l1.rpc.stop()
-    l1.daemon.wait_for_log(r"test_libplugin: shutdown called")
+    l1.daemon.wait_for_logs(['test_libplugin: shutdown called',
+                             'misc_notifications.py: via lightningd shutdown, datastore failed',
+                             'test_libplugin: failed to self-terminate in time, killing.'])

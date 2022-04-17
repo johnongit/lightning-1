@@ -80,6 +80,10 @@ static const struct feature_style feature_styles[] = {
 	  .copy_style = { [INIT_FEATURE] = FEATURE_REPRESENT,
 			  [NODE_ANNOUNCE_FEATURE] = FEATURE_REPRESENT,
 			  [CHANNEL_FEATURE] = FEATURE_DONT_REPRESENT } },
+	{ OPT_ANCHORS_ZERO_FEE_HTLC_TX,
+	  .copy_style = { [INIT_FEATURE] = FEATURE_REPRESENT,
+			  [NODE_ANNOUNCE_FEATURE] = FEATURE_REPRESENT,
+			  [CHANNEL_FEATURE] = FEATURE_DONT_REPRESENT } },
 	{ OPT_DUAL_FUND,
 	  .copy_style = { [INIT_FEATURE] = FEATURE_REPRESENT,
 			  [NODE_ANNOUNCE_FEATURE] = FEATURE_REPRESENT,
@@ -92,6 +96,14 @@ static const struct feature_style feature_styles[] = {
 	{ OPT_QUIESCE,
 	  .copy_style = { [INIT_FEATURE] = FEATURE_REPRESENT,
 			  [NODE_ANNOUNCE_FEATURE] = FEATURE_REPRESENT,
+			  [CHANNEL_FEATURE] = FEATURE_DONT_REPRESENT } },
+	{ OPT_PAYMENT_METADATA,
+	  .copy_style = { [INIT_FEATURE] = FEATURE_DONT_REPRESENT,
+			  [NODE_ANNOUNCE_FEATURE] = FEATURE_DONT_REPRESENT,
+			  /* Note: we don't actually set this in invoices, since
+			   * we don't need to use it, but if we don't set it here
+			   * we refuse to parse it. */
+			  [BOLT11_FEATURE] = FEATURE_REPRESENT,
 			  [CHANNEL_FEATURE] = FEATURE_DONT_REPRESENT } },
 };
 
@@ -119,6 +131,12 @@ static const struct dependency feature_deps[] = {
 	 * `option_anchor_outputs` | ...      | ...      | `option_static_remotekey`
 	 */
 	{ OPT_ANCHOR_OUTPUTS, OPT_STATIC_REMOTEKEY },
+	/* BOLT #9:
+	 * Name                | Description  | Context  | Dependencies  |
+	 *...
+	 * `option_anchors_zero_fee_htlc_tx` | ...      | ...      | `option_static_remotekey`
+	 */
+	{ OPT_ANCHORS_ZERO_FEE_HTLC_TX, OPT_STATIC_REMOTEKEY },
 	/* BOLT-f53ca2301232db780843e894f55d95d512f297f9 #9:
 	 * Name                | Description  | Context  | Dependencies  |
 	 * ...
@@ -405,7 +423,7 @@ const char *feature_name(const tal_t *ctx, size_t f)
 		"option_provide_peer_backup", /* https://github.com/lightningnetwork/lightning-rfc/pull/881 */
 		NULL,
 		NULL,
-		NULL,
+		"option_payment_metadata",
 		NULL, /* 50/51 */
 		NULL,
 		"option_keysend",

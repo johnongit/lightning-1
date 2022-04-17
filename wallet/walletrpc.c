@@ -10,11 +10,15 @@
 #include <common/json_tok.h>
 #include <common/key_derive.h>
 #include <common/param.h>
+#include <common/psbt_keypath.h>
+#include <common/psbt_open.h>
 #include <common/type_to_string.h>
+#include <db/exec.h>
 #include <errno.h>
 #include <hsmd/hsmd_wiregen.h>
 #include <lightningd/chaintopology.h>
 #include <lightningd/channel.h>
+#include <lightningd/coin_mvts.h>
 #include <lightningd/jsonrpc.h>
 #include <lightningd/lightningd.h>
 #include <lightningd/peer_control.h>
@@ -48,7 +52,7 @@ encode_pubkey_to_addr(const tal_t *ctx,
 				     chainparams,
 				     &h160);
 	} else {
-		hrp = chainparams->bip173_name;
+		hrp = chainparams->onchain_hrp;
 
 		/* out buffer is 73 + strlen(human readable part),
 		 * see common/bech32.h*/
@@ -655,6 +659,35 @@ static struct command_result *match_psbt_inputs_to_utxos(struct command *cmd,
 	return NULL;
 }
 
+static void match_psbt_outputs_to_wallet(struct wally_psbt *psbt,
+				  struct wallet *w)
+{
+	assert(psbt->tx->num_outputs == psbt->num_outputs);
+	tal_wally_start();
+	for (size_t outndx = 0; outndx < psbt->num_outputs; ++outndx) {
+		u32 index;
+		bool is_p2sh;
+		const u8 *script;
+		struct ext_key ext;
+
+		script = wally_tx_output_get_script(tmpctx,
+						    &psbt->tx->outputs[outndx]);
+		if (!script)
+			continue;
+
+		if (!wallet_can_spend(w, script, &index, &is_p2sh))
+			continue;
+
+		if (bip32_key_from_parent(
+			    w->bip32_base, index, BIP32_FLAG_KEY_PUBLIC, &ext) != WALLY_OK) {
+			abort();
+		}
+
+		psbt_set_keypath(index, &ext, &psbt->outputs[outndx].keypaths);
+	}
+	tal_wally_end(psbt);
+}
+
 static struct command_result *param_input_numbers(struct command *cmd,
 						  const char *name,
 						  const char *buffer,
@@ -718,6 +751,9 @@ static struct command_result *json_signpsbt(struct command *cmd,
 		return command_fail(cmd, LIGHTNINGD,
 				    "No wallet inputs to sign");
 
+	/* Update the keypaths on any outputs that are in our wallet (change addresses). */
+	match_psbt_outputs_to_wallet(psbt, cmd->ld->wallet);
+
 	/* FIXME: hsm will sign almost anything, but it should really
 	 * fail cleanly (not abort!) and let us report the error here. */
 	u8 *msg = towire_hsmd_sign_withdrawal(cmd,
@@ -753,8 +789,47 @@ struct sending_psbt {
 	struct command *cmd;
 	struct utxo **utxos;
 	struct wally_tx *wtx;
+	/* Hold onto b/c has data about
+	 * which are to external addresses */
+	struct wally_psbt *psbt;
 	u32 reserve_blocks;
 };
+
+static void maybe_notify_new_external_send(struct lightningd *ld,
+					   struct bitcoin_txid *txid,
+					   u32 outnum,
+					   struct wally_psbt *psbt)
+{
+	struct chain_coin_mvt *mvt;
+	struct bitcoin_outpoint outpoint;
+	struct amount_sat amount;
+	u32 index;
+	bool is_p2sh;
+	const u8 *script;
+
+	/* If it's not going to an external address, ignore */
+	if (!psbt_output_to_external(&psbt->outputs[outnum]))
+		return;
+
+	/* If it's going to our wallet, ignore */
+	script = wally_tx_output_get_script(tmpctx,
+					    &psbt->tx->outputs[outnum]);
+	if (wallet_can_spend(ld->wallet, script, &index, &is_p2sh))
+		return;
+
+	outpoint.txid = *txid;
+	outpoint.n = outnum;
+	amount = psbt_output_get_amount(psbt, outnum);
+
+	mvt = new_coin_external_deposit(NULL, &outpoint,
+					0, amount,
+					DEPOSIT);
+
+	mvt->originating_acct = WALLET;
+	notify_chain_mvt(ld, mvt);
+	tal_free(mvt);
+}
+
 
 static void sendpsbt_done(struct bitcoind *bitcoind UNUSED,
 			  bool success, const char *msg,
@@ -787,9 +862,12 @@ static void sendpsbt_done(struct bitcoind *bitcoind UNUSED,
 
 	/* Extract the change output and add it to the DB */
 	wallet_extract_owned_outputs(ld->wallet, sending->wtx, NULL, &change);
+	wally_txid(sending->wtx, &txid);
+
+	for (size_t i = 0; i < sending->psbt->num_outputs; i++)
+		maybe_notify_new_external_send(ld, &txid, i, sending->psbt);
 
 	response = json_stream_success(sending->cmd);
-	wally_txid(sending->wtx, &txid);
 	json_add_hex_talarr(response, "tx", linearize_wtx(tmpctx, sending->wtx));
 	json_add_txid(response, "txid", &txid);
 	was_pending(command_success(sending->cmd, response));
@@ -818,6 +896,12 @@ static struct command_result *json_sendpsbt(struct command *cmd,
 
 	psbt_finalize(psbt);
 	sending->wtx = psbt_final_tx(sending, psbt);
+
+	/* psbt contains info about which outputs are to external,
+	 * and thus need a coin_move issued for them. We only
+	 * notify if the transaction broadcasts */
+	sending->psbt = tal_steal(sending, psbt);
+
 	if (!sending->wtx)
 		return command_fail(cmd, LIGHTNINGD,
 				    "PSBT not finalizeable %s",

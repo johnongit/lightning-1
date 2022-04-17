@@ -7,10 +7,10 @@ from pyln.client import RpcError
 from threading import Event
 from pyln.testing.utils import (
     DEVELOPER, TIMEOUT, VALGRIND, DEPRECATED_APIS, sync_blockheight, only_one,
-    wait_for, TailableProc, env
+    wait_for, TailableProc, env, mine_funding_to_announce
 )
 from utils import (
-    check_coin_moves, account_balance, scriptpubkey_addr,
+    account_balance, scriptpubkey_addr, check_coin_moves
 )
 from ephemeral_port_reserve import reserve
 from utils import EXPERIMENTAL_FEATURES
@@ -316,7 +316,7 @@ def test_htlc_out_timeout(node_factory, bitcoind, executor):
     """Test that we drop onchain if the peer doesn't time out HTLC"""
 
     # HTLC 1->2, 1 fails after it's irrevocably committed, can't reconnect
-    disconnects = ['@WIRE_REVOKE_AND_ACK']
+    disconnects = ['-WIRE_REVOKE_AND_ACK']
     # Feerates identical so we don't get gratuitous commit to update them
     l1 = node_factory.get_node(disconnect=disconnects,
                                options={'dev-no-reconnect': None},
@@ -333,10 +333,10 @@ def test_htlc_out_timeout(node_factory, bitcoind, executor):
     inv = l2.rpc.invoice(amt, 'test_htlc_out_timeout', 'desc')['bolt11']
     assert only_one(l2.rpc.listinvoices('test_htlc_out_timeout')['invoices'])['status'] == 'unpaid'
 
-    executor.submit(l1.rpc.dev_pay, inv, use_shadow=False)
+    executor.submit(l1.dev_pay, inv, use_shadow=False)
 
     # l1 will disconnect, and not reconnect.
-    l1.daemon.wait_for_log('dev_disconnect: @WIRE_REVOKE_AND_ACK')
+    l1.daemon.wait_for_log('dev_disconnect: -WIRE_REVOKE_AND_ACK')
 
     # Takes 6 blocks to timeout (cltv-final + 1), but we also give grace period of 1 block.
     # shadow route can add extra blocks!
@@ -400,7 +400,7 @@ def test_htlc_in_timeout(node_factory, bitcoind, executor):
     inv = l2.rpc.invoice(amt, 'test_htlc_in_timeout', 'desc')['bolt11']
     assert only_one(l2.rpc.listinvoices('test_htlc_in_timeout')['invoices'])['status'] == 'unpaid'
 
-    executor.submit(l1.rpc.dev_pay, inv, use_shadow=False)
+    executor.submit(l1.dev_pay, inv, use_shadow=False)
 
     # l1 will disconnect and not reconnect.
     l1.daemon.wait_for_log('dev_disconnect: -WIRE_REVOKE_AND_ACK')
@@ -452,7 +452,7 @@ def test_bech32_funding(node_factory, chainparams):
     wallettxid = res['wallettxid']
 
     wallettx = l1.bitcoin.rpc.getrawtransaction(wallettxid, True)
-    fundingtx = l1.bitcoin.rpc.decoderawtransaction(res['fundingtx']['tx'])
+    fundingtx = l1.bitcoin.rpc.decoderawtransaction(res['fundingtx'])
 
     def is_p2wpkh(output):
         return output['type'] == 'witness_v0_keyhash' and \
@@ -493,6 +493,7 @@ def test_withdraw_misc(node_factory, bitcoind, chainparams):
 
     waddr = l1.bitcoin.getnewaddress()
     # Now attempt to withdraw some (making sure we collect multiple inputs)
+    l1.rpc.check_request_schemas = False
     with pytest.raises(RpcError):
         l1.rpc.withdraw('not an address', amount)
     with pytest.raises(RpcError):
@@ -501,6 +502,7 @@ def test_withdraw_misc(node_factory, bitcoind, chainparams):
         l1.rpc.withdraw(waddr, -amount)
     with pytest.raises(RpcError, match=r'Could not afford'):
         l1.rpc.withdraw(waddr, amount * 100)
+    l1.rpc.check_request_schemas = True
 
     out = l1.rpc.withdraw(waddr, amount)
 
@@ -623,63 +625,15 @@ def test_withdraw_misc(node_factory, bitcoind, chainparams):
     sync_blockheight(bitcoind, [l1])
     assert account_balance(l1, 'wallet') == 0
 
-    wallet_moves = [
-        {'type': 'chain_mvt', 'credit': 2000000000, 'debit': 0, 'tag': 'deposit'},
-        {'type': 'chain_mvt', 'credit': 2000000000, 'debit': 0, 'tag': 'deposit'},
-        {'type': 'chain_mvt', 'credit': 2000000000, 'debit': 0, 'tag': 'deposit'},
-        {'type': 'chain_mvt', 'credit': 2000000000, 'debit': 0, 'tag': 'deposit'},
-        {'type': 'chain_mvt', 'credit': 2000000000, 'debit': 0, 'tag': 'deposit'},
-        {'type': 'chain_mvt', 'credit': 2000000000, 'debit': 0, 'tag': 'deposit'},
-        {'type': 'chain_mvt', 'credit': 2000000000, 'debit': 0, 'tag': 'deposit'},
-        {'type': 'chain_mvt', 'credit': 2000000000, 'debit': 0, 'tag': 'deposit'},
-        {'type': 'chain_mvt', 'credit': 2000000000, 'debit': 0, 'tag': 'deposit'},
-        {'type': 'chain_mvt', 'credit': 2000000000, 'debit': 0, 'tag': 'deposit'},
-        {'type': 'chain_mvt', 'credit': 0, 'debit': 0, 'tag': 'spend_track'},
-        {'type': 'chain_mvt', 'credit': 0, 'debit': 0, 'tag': 'spend_track'},
-        [
-            {'type': 'chain_mvt', 'credit': 0, 'debit': 2000000000, 'tag': 'withdrawal'},
-            {'type': 'chain_mvt', 'credit': 0, 'debit': 1993760000, 'tag': 'withdrawal'},
-        ],
-        {'type': 'chain_mvt', 'credit': 0, 'debit': 6240000, 'tag': 'chain_fees'},
-        {'type': 'chain_mvt', 'credit': 1993760000, 'debit': 0, 'tag': 'deposit'},
-        {'type': 'chain_mvt', 'credit': 0, 'debit': 0, 'tag': 'spend_track'},
-        {'type': 'chain_mvt', 'credit': 0, 'debit': 0, 'tag': 'spend_track'},
-        [
-            {'type': 'chain_mvt', 'credit': 0, 'debit': 2000000000, 'tag': 'withdrawal'},
-            {'type': 'chain_mvt', 'credit': 0, 'debit': 1993760000, 'tag': 'withdrawal'},
-        ],
-        {'type': 'chain_mvt', 'credit': 0, 'debit': 6240000, 'tag': 'chain_fees'},
-        {'type': 'chain_mvt', 'credit': 1993760000, 'debit': 0, 'tag': 'deposit'},
-        {'type': 'chain_mvt', 'credit': 0, 'debit': 0, 'tag': 'spend_track'},
-        {'type': 'chain_mvt', 'credit': 0, 'debit': 0, 'tag': 'spend_track'},
-        [
-            {'type': 'chain_mvt', 'credit': 0, 'debit': 2000000000, 'tag': 'withdrawal'},
-            {'type': 'chain_mvt', 'credit': 0, 'debit': 1993760000, 'tag': 'withdrawal'},
-        ],
-        {'type': 'chain_mvt', 'credit': 0, 'debit': 6240000, 'tag': 'chain_fees'},
-        {'type': 'chain_mvt', 'credit': 1993760000, 'debit': 0, 'tag': 'deposit'},
-        {'type': 'chain_mvt', 'credit': 0, 'debit': 0, 'tag': 'spend_track'},
-        {'type': 'chain_mvt', 'credit': 0, 'debit': 0, 'tag': 'spend_track'},
-        [
-            {'type': 'chain_mvt', 'credit': 0, 'debit': 1993400000, 'tag': 'withdrawal'},
-            {'type': 'chain_mvt', 'credit': 0, 'debit': 2000000000, 'tag': 'withdrawal'},
-        ],
-        {'type': 'chain_mvt', 'credit': 0, 'debit': 6600000, 'tag': 'chain_fees'},
-        {'type': 'chain_mvt', 'credit': 1993400000, 'debit': 0, 'tag': 'deposit'},
-        {'type': 'chain_mvt', 'credit': 0, 'debit': 0, 'tag': 'spend_track'},
-        {'type': 'chain_mvt', 'credit': 0, 'debit': 0, 'tag': 'spend_track'},
-        {'type': 'chain_mvt', 'credit': 0, 'debit': 0, 'tag': 'spend_track'},
-        {'type': 'chain_mvt', 'credit': 0, 'debit': 0, 'tag': 'spend_track'},
-        {'type': 'chain_mvt', 'credit': 0, 'debit': 0, 'tag': 'spend_track'},
-        {'type': 'chain_mvt', 'credit': 0, 'debit': 0, 'tag': 'spend_track'},
-        {'type': 'chain_mvt', 'credit': 0, 'debit': 11961240000, 'tag': 'withdrawal'},
-        {'type': 'chain_mvt', 'credit': 0, 'debit': 13440000, 'tag': 'chain_fees'},
-        {'type': 'chain_mvt', 'credit': 11961240000, 'debit': 0, 'tag': 'deposit'},
-        {'type': 'chain_mvt', 'credit': 0, 'debit': 0, 'tag': 'spend_track'},
-        {'type': 'chain_mvt', 'credit': 0, 'debit': 11957603000, 'tag': 'withdrawal'},
-        {'type': 'chain_mvt', 'credit': 0, 'debit': 3637000, 'tag': 'chain_fees'},
+    external_moves = [
+        {'type': 'chain_mvt', 'credit': 2000000000, 'debit': 0, 'tags': ['deposit']},
+        {'type': 'chain_mvt', 'credit': 2000000000, 'debit': 0, 'tags': ['deposit']},
+        {'type': 'chain_mvt', 'credit': 2000000000, 'debit': 0, 'tags': ['deposit']},
+        {'type': 'chain_mvt', 'credit': 2000000000, 'debit': 0, 'tags': ['deposit']},
+        {'type': 'chain_mvt', 'credit': 11957603000, 'debit': 0, 'tags': ['deposit']},
     ]
-    check_coin_moves(l1, 'wallet', wallet_moves, chainparams)
+
+    check_coin_moves(l1, 'external', external_moves, chainparams)
 
 
 def test_io_logging(node_factory, executor):
@@ -1139,7 +1093,9 @@ def test_funding_reorg_private(node_factory, bitcoind):
     # Rescan to detect reorg at restart and may_reconnect so channeld
     # will restart.  Reorg can cause bad gossip msg.
     opts = {'funding-confirms': 2, 'rescan': 10, 'may_reconnect': True,
-            'allow_bad_gossip': True}
+            'allow_bad_gossip': True,
+            # gossipd send lightning update for original channel.
+            'allow_broken_log': True}
     l1, l2 = node_factory.line_graph(2, fundchannel=False, opts=opts)
     l1.fundwallet(10000000)
     sync_blockheight(bitcoind, [l1])                # height 102
@@ -1201,7 +1157,7 @@ def test_funding_reorg_remote_lags(node_factory, bitcoind):
 
     # Reorg changes short_channel_id 103x1x0 to 104x1x0, l1 sees it, restarts channeld
     bitcoind.simple_reorg(103, 1)                   # heights 103 - 108
-    # But now it's height 104, we need another block to make it announcable.
+    # But now it's height 104, we need another block to make it announceable.
     bitcoind.generate_block(1)
     l1.daemon.wait_for_log(r'Peer transient failure .* short_channel_id changed to 104x1x0 \(was 103x1x0\)')
 
@@ -1349,7 +1305,7 @@ def test_reserve_enforcement(node_factory, executor):
         'Peer transient failure in CHANNELD_NORMAL: channeld.*'
         ' CHANNEL_ERR_CHANNEL_CAPACITY_EXCEEDED'
     )
-    assert only_one(l1.rpc.listpeers()['peers'])['connected'] is False
+    wait_for(lambda: only_one(l1.rpc.listpeers()['peers'])['connected'] is False)
 
 
 def test_ipv4_and_ipv6(node_factory):
@@ -1562,6 +1518,7 @@ def test_configfile_before_chdir(node_factory):
 def test_json_error(node_factory):
     """Must return valid json even if it quotes our weirdness"""
     l1 = node_factory.get_node()
+    l1.rpc.check_request_schemas = False
     with pytest.raises(RpcError, match=r'id: should be a channel ID or short channel ID: invalid token'):
         l1.rpc.close({"tx": "020000000001011490f737edd2ea2175a032b58ea7cd426dfc244c339cd044792096da3349b18a0100000000ffffffff021c900300000000001600140e64868e2f752314bc82a154c8c5bf32f3691bb74da00b00000000002200205b8cd3b914cf67cdd8fa6273c930353dd36476734fbd962102c2df53b90880cd0247304402202b2e3195a35dc694bbbc58942dc9ba59cc01d71ba55c9b0ad0610ccd6a65633702201a849254453d160205accc00843efb0ad1fe0e186efa6a7cee1fb6a1d36c736a012103d745445c9362665f22e0d96e9e766f273f3260dea39c8a76bfa05dd2684ddccf00000000", "txid": "2128c10f0355354479514f4a23eaa880d94e099406d419bbb0d800143accddbb", "channel_id": "bbddcc3a1400d8b0bb19d40694094ed980a8ea234a4f5179443555030fc12820"})
 
@@ -1830,7 +1787,7 @@ def test_list_features_only(node_factory):
     expected = ['option_data_loss_protect/odd',
                 'option_upfront_shutdown_script/odd',
                 'option_gossip_queries/odd',
-                'option_var_onion_optin/odd',
+                'option_var_onion_optin/even',
                 'option_gossip_queries_ex/odd',
                 'option_static_remotekey/odd',
                 'option_payment_secret/even',
@@ -2224,8 +2181,8 @@ def test_sendcustommsg(node_factory):
     # This should work since the peer is currently owned by `channeld`
     l2.rpc.sendcustommsg(l1.info['id'], msg)
     l2.daemon.wait_for_log(
-        r'{peer_id}-{owner}-chan#[0-9]: \[OUT\] {msg}'.format(
-            owner='channeld', msg=msg, peer_id=l1.info['id']
+        r'{peer_id}-{owner}: \[OUT\] {msg}'.format(
+            owner='connectd', msg=msg, peer_id=l1.info['id']
         )
     )
     l1.daemon.wait_for_log(r'\[IN\] {}'.format(msg))
@@ -2239,8 +2196,8 @@ def test_sendcustommsg(node_factory):
     # This should work since the peer is currently owned by `openingd`
     l2.rpc.sendcustommsg(l4.info['id'], msg)
     l2.daemon.wait_for_log(
-        r'{peer_id}-{owner}-chan#[0-9]: \[OUT\] {msg}'.format(
-            owner='openingd', msg=msg, peer_id=l4.info['id']
+        r'{peer_id}-{owner}: \[OUT\] {msg}'.format(
+            owner='connectd', msg=msg, peer_id=l4.info['id']
         )
     )
     l4.daemon.wait_for_log(r'\[IN\] {}'.format(msg))
@@ -2337,7 +2294,7 @@ def test_listforwards(node_factory, bitcoind):
     c24, _ = l2.fundchannel(l4, 10**5)
 
     # Wait until channels are active
-    bitcoind.generate_block(5)
+    mine_funding_to_announce(bitcoind, [l1, l2, l3, l4])
     l1.wait_channel_active(c23)
 
     # successful payments
@@ -2383,6 +2340,7 @@ def test_listforwards(node_factory, bitcoind):
     assert len(c24_forwards) == 1
 
 
+@pytest.mark.openchannel('v1')
 def test_version_reexec(node_factory, bitcoind):
     badopeningd = os.path.join(os.path.dirname(__file__), "plugins", "badopeningd.sh")
     version = subprocess.check_output(['lightningd/lightningd',
@@ -2404,7 +2362,12 @@ def test_version_reexec(node_factory, bitcoind):
                               'fff6'))          # type
         f.write(bytes('badversion\0', encoding='utf8'))
 
+    # Opening a channel will fire subd.
     l1.rpc.connect(l2.info['id'], 'localhost', l2.port)
+    try:
+        l1.fundchannel(l2)
+    except RpcError:
+        pass
 
     l1.daemon.wait_for_log("openingd.*version 'badversion' not '{}': restarting".format(version))
 
