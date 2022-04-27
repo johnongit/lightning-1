@@ -8,14 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 TODO: Insert version codename, and username of the contributor that named the release.
 -->
 
-## [v0.11.0rc3] - 2022-04-04: Simon's Carefully Chosen Release Name
+## [0.11.0.1] - 2022-04-04: Simon's Carefully Chosen Release Name
 
-This release named by Simon Vrouwe; this marks the name change to core-lightning (#CLN).
+This release would have been named by Simon Vrouwe, had he responded to my emails!
+
+This marks the name change to core-lightning (#CLN).
 
 ### Added
 
  - Protocol: we now support opening multiple channels with the same peer. ([#5078])
  - Protocol: we send/receive IP addresses in `init`, and send updated node_announcement when two peers report the same remote_addr (`disable-ip-discovery` suppresses this announcement). ([#5052])
+ - Protocol: we more aggressively send our own gossip, to improve propagation chances. ([#5200])
  - Plugins: `cln-grpc` first class GRPC interface for remotely controlling nodes over mTLS authentication; set `grpc-port` to activate ([#5013])
  - Database: With the `sqlite3://` scheme for `--wallet` option, you can now specify a second file path for real-time database backup by separating it from the main file path with a `:` character. ([#4890])
  - Protocol: `pay` (and decode, etc) supports bolt11 payment_metadata a-la https://github.com/lightning/bolts/pull/912 ([#5086])
@@ -96,7 +99,7 @@ Note: You should always set `allow-deprecated-apis=false` to test for changes.
  - Fixed `experimental-websocket-port` to work with default addresses. ([#4945])
  - Protocol: removed support for v0.10.1 onion messages. ([#4921])
  - Protocol: Ability to announce DNS addresses ([#4829])
-
+ - Protocol: disabled websocket announcement due to LND propagation issues ([#5200])
 
 
 [#4829]: https://github.com/ElementsProject/lightning/pull/4829
@@ -141,6 +144,7 @@ Note: You should always set `allow-deprecated-apis=false` to test for changes.
 [#5130]: https://github.com/ElementsProject/lightning/pull/5130
 [#5136]: https://github.com/ElementsProject/lightning/pull/5136
 [#5146]: https://github.com/ElementsProject/lightning/pull/5146
+[#5200]: https://github.com/ElementsProject/lightning/pull/5200
 [0.11.0]: https://github.com/ElementsProject/lightning/releases/tag/v0.11.0
 
 ## [0.10.2] - 2021-11-03: Bitcoin Dust Consensus Rule

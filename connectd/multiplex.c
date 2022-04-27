@@ -356,7 +356,27 @@ static u8 *maybe_from_gossip_store(const tal_t *ctx, struct peer *peer)
 {
 	u8 *msg;
 
-	/* Not streaming yet? */
+	/* dev-mode can suppress all gossip */
+	if (IFDEV(peer->daemon->dev_suppress_gossip, false))
+		return NULL;
+
+	/* BOLT #7:
+	 *   - if the `gossip_queries` feature is negotiated:
+	 *     - MUST NOT relay any gossip messages it did not generate itself,
+	 *       unless explicitly requested.
+	 */
+
+	/* So, even if they didn't send us a timestamp_filter message,
+	 * we *still* send our own gossip. */
+	if (!peer->gs.gossip_timer) {
+		return gossip_store_next(ctx, &peer->daemon->gossip_store_fd,
+					 0, 0xFFFFFFFF,
+					 true,
+					 &peer->gs.off,
+					 &peer->daemon->gossip_store_end);
+	}
+
+	/* Not streaming right now? */
 	if (!peer->gs.active)
 		return NULL;
 
@@ -367,13 +387,11 @@ again:
 	msg = gossip_store_next(ctx, &peer->daemon->gossip_store_fd,
 				peer->gs.timestamp_min,
 				peer->gs.timestamp_max,
+				false,
 				&peer->gs.off,
 				&peer->daemon->gossip_store_end);
 	/* Don't send back gossip they sent to us! */
 	if (msg) {
-		status_peer_debug(&peer->id,
-				  "Sending gossip %s",
-				  peer_wire_name(fromwire_peektype(msg)));
 		if (gossip_rcvd_filter_del(peer->gs.grf, msg)) {
 			msg = tal_free(msg);
 			goto again;
@@ -561,7 +579,7 @@ static void handle_gossip_in(struct peer *peer, const u8 *msg)
 	daemon_conn_send(peer->daemon->gossipd, take(gmsg));
 }
 
-static void handle_gossip_timetamp_filter_in(struct peer *peer, const u8 *msg)
+static void handle_gossip_timestamp_filter_in(struct peer *peer, const u8 *msg)
 {
 	struct bitcoin_blkid chain_hash;
 	u32 first_timestamp, timestamp_range;
@@ -629,7 +647,7 @@ static bool handle_message_locally(struct peer *peer, const u8 *msg)
 		gossip_rcvd_filter_add(peer->gs.grf, msg);
 
 	if (type == WIRE_GOSSIP_TIMESTAMP_FILTER) {
-		handle_gossip_timetamp_filter_in(peer, msg);
+		handle_gossip_timestamp_filter_in(peer, msg);
 		return true;
 	} else if (type == WIRE_PING) {
 		handle_ping_in(peer, msg);

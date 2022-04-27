@@ -335,19 +335,9 @@ send:
 	return true;
 }
 
-/* This retransmits the existing node announcement */
-static void force_self_nannounce_rexmit(struct daemon *daemon)
-{
-	struct node *self = get_node(daemon->rstate, &daemon->id);
-
-	force_node_announce_rexmit(daemon->rstate, self);
-}
-
 static void update_own_node_announcement_after_startup(struct daemon *daemon)
 {
-	/* If that doesn't send one, arrange rexmit anyway */
-	if (!update_own_node_announcement(daemon, false, false))
-		force_self_nannounce_rexmit(daemon);
+	update_own_node_announcement(daemon, false, false);
 }
 
 /* This creates and transmits a *new* node announcement */
@@ -362,15 +352,23 @@ static void force_self_nannounce_regen(struct daemon *daemon)
 	update_own_node_announcement(daemon, false, true);
 }
 
-/* Because node_announcement propagation is spotty, we rexmit this every
+/* Because node_announcement propagation is spotty, we regenerate this every
  * 24 hours. */
 static void setup_force_nannounce_regen_timer(struct daemon *daemon)
 {
+	struct timerel regen_time;
+
+	/* For developers we can force a regen every 24 seconds to test */
+	if (IFDEV(daemon->rstate->dev_fast_gossip_prune, false))
+		regen_time = time_from_sec(24);
+	else
+		regen_time = time_from_sec(24 * 3600);
+
 	tal_free(daemon->node_announce_regen_timer);
 	daemon->node_announce_regen_timer
 		= new_reltimer(&daemon->timers,
 			       daemon,
-			       time_from_sec(24 * 3600),
+			       regen_time,
 			       force_self_nannounce_regen,
 			       daemon);
 }
@@ -386,11 +384,7 @@ void maybe_send_own_node_announce(struct daemon *daemon, bool startup)
 	if (!daemon->rstate->local_channel_announced)
 		return;
 
-	/* If we didn't send one, arrange rexmit of existing at startup */
-	if (!update_own_node_announcement(daemon, startup, false)) {
-		if (startup)
-			force_self_nannounce_rexmit(daemon);
-	}
+	update_own_node_announcement(daemon, startup, false);
 }
 
 /* Fast accessors for channel_update fields */
