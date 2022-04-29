@@ -45,6 +45,29 @@ RUN mkdir /opt/litecoin && cd /opt/litecoin \
     && tar -xzvf litecoin.tar.gz $BD/litecoin-cli --strip-components=1 --exclude=*-qt \
     && rm litecoin.tar.gz
 
+
+FROM debian:buster-slim as build-rust
+
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        build-essential \
+        ca-certificates \
+        curl \
+        git \
+        ssh \
+        libssl-dev \
+        pkg-config && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+ENV RUSTUP_HOME=/rust
+ENV CARGO_HOME=/cargo
+ENV PATH=/cargo/bin:/rust/bin:$PATH
+
+RUN echo "(curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain nightly --no-modify-path) && rustup default nightly" > /install-rust.sh && chmod 755 /install-rust.sh && /install-rust.sh && \
+    cargo install c-lightning-pruning-plugin
+
+
 FROM debian:buster-slim as builder
 
 ENV LIGHTNINGD_VERSION=master
@@ -68,7 +91,26 @@ RUN apt-get update -qq && \
         python3-pip \
         python3-venv \
         python3-setuptools \
-        wget
+        wget \
+        libcurl4-gnutls-dev \
+        autoconf \
+        build-essential \
+        libev-dev \
+        autoconf-archive \
+        pkg-config \
+        libsqlite3-dev \ 
+        libsodium-dev \
+        zlib1g-dev \
+        libgmp-dev \
+        valgrind \
+        libpq-dev
+
+
+RUN git clone https://github.com/ZmnSCPxj/clboss.git && \
+    cd clboss && \
+    autoreconf -i && \
+    ./configure && make && \
+    make install
 
 RUN wget -q https://zlib.net/zlib-1.2.12.tar.gz \
 && tar xvf zlib-1.2.12.tar.gz \
@@ -109,8 +151,39 @@ RUN ./configure --prefix=/tmp/lightning_install --enable-static && make -j3 DEVE
 FROM debian:buster-slim as final
 
 COPY --from=downloader /opt/tini /usr/bin/tini
-RUN apt-get update && apt-get install -y --no-install-recommends socat inotify-tools python3 python3-pip libpq5\
-    && rm -rf /var/lib/apt/lists/*
+
+RUN apt-get update && apt-get install -y --no-install-recommends default-jdk libffi-dev libleveldb-dev libev-dev libpq5 \
+    libsodium-dev libpq-dev git socat inotify-tools python3 python3-pip python3-setuptools build-essential python3-dev python3-wheel python3-venv dnsutils curl \    
+    && curl -sL https://deb.nodesource.com/setup_12.x  | bash - && \
+    apt-get -y install nodejs &&\
+    rm -rf /var/lib/apt/lists/*
+# Install watchtower client
+RUN pip3 install --upgrade pip
+
+RUN mkdir -p /python-plugin/plugins  && \
+    git clone https://github.com/talaia-labs/python-teos.git && \
+    cd python-teos &&  pip3 install -r requirements.txt && \
+    cd watchtower-plugin && pip3 install -r requirements.txt && \
+    cd /python-teos && COMMON_ONLY=1 pip3 install . 
+
+## Install cln-rest for RTL
+RUN mkdir -p /python-plugin/plugins \
+    && cd /python-plugin/plugins && \
+    git clone https://github.com/Ride-The-Lightning/c-lightning-REST.git && \
+    cd c-lightning-REST && \
+    npm install --only=production
+
+
+## Install btcli4j
+RUN git clone https://github.com/clightning4j/btcli4j.git /plugins/btcli4j && \
+    cd /plugins/btcli4j && \
+    ./gradlew --stacktrace createRunnableScript
+
+## Install sparko
+RUN curl -L https://github.com/fiatjaf/sparko/releases/download/v2.9/sparko_linux_amd64 --output /root/sparko_linux_amd64 && \
+    chmod +x /root/sparko_linux_amd64
+
+COPY --from=builder /usr/local/bin /usr/local/bin
 
 ENV LIGHTNINGD_DATA=/root/.lightning
 ENV LIGHTNINGD_RPC_PORT=9835
@@ -123,7 +196,9 @@ VOLUME [ "/root/.lightning" ]
 COPY --from=builder /tmp/lightning_install/ /usr/local/
 COPY --from=downloader /opt/bitcoin/bin /usr/bin
 COPY --from=downloader /opt/litecoin/bin /usr/bin
+COPY --from=build-rust /cargo/bin/c-lightning-pruning-plugin /usr/bin/
+
 COPY tools/docker-entrypoint.sh entrypoint.sh
 
-EXPOSE 9735 9835
+EXPOSE 9735 9835 9737
 ENTRYPOINT  [ "/usr/bin/tini", "-g", "--", "./entrypoint.sh" ]
