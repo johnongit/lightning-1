@@ -13,8 +13,9 @@
 #include <ccan/array_size/array_size.h>
 #include <ccan/json_out/json_out.h>
 #include <ccan/tal/str/str.h>
+#include <common/json_param.h>
 #include <common/json_stream.h>
-#include <common/json_tok.h>
+#include <common/lease_rates.h>
 #include <common/memleak.h>
 #include <common/overflows.h>
 #include <common/psbt_open.h>
@@ -358,6 +359,33 @@ psbt_fund_failed(struct command *cmd,
 	return command_hook_success(cmd);
 }
 
+/* They give msats, we want sats */
+static bool json_to_msat_as_sats(const char *buffer, const jsmntok_t *tok,
+				 struct amount_sat *sat)
+{
+	struct amount_msat msat;
+	if (!json_to_msat(buffer, tok, &msat))
+		return false;
+	return amount_msat_to_sat(sat, msat);
+}
+
+static struct command_result *param_msat_as_sat(struct command *cmd,
+						const char *name,
+						const char *buffer,
+						const jsmntok_t *tok,
+						struct amount_sat **sat)
+{
+	struct amount_msat msat;
+
+	*sat = tal(cmd, struct amount_sat);
+	if (parse_amount_msat(&msat, buffer + tok->start, tok->end - tok->start)
+	    && amount_msat_to_sat(*sat, msat))
+		return NULL;
+
+	return command_fail_badparam(cmd, name, buffer, tok,
+				     "should be a millisatoshi amount");
+}
+
 static struct command_result *
 listfunds_success(struct command *cmd,
 		  const char *buf,
@@ -388,7 +416,7 @@ listfunds_success(struct command *cmd,
 				"{amount_msat:%"
 				",status:%"
 				",reserved:%}",
-				JSON_SCAN(json_to_sat, &val),
+				JSON_SCAN(json_to_msat_as_sats, &val),
 				JSON_SCAN_TAL(cmd, json_strdup, &status),
 				JSON_SCAN(json_to_bool, &is_reserved));
 		if (err)
@@ -511,7 +539,7 @@ json_openchannel2_call(struct command *cmd,
 			"{openchannel2:"
 			"{id:%"
 			",channel_id:%"
-			",their_funding:%"
+			",their_funding_msat:%"
 			",max_htlc_value_in_flight_msat:%"
 			",htlc_minimum_msat:%"
 			",funding_feerate_per_kw:%"
@@ -524,7 +552,7 @@ json_openchannel2_call(struct command *cmd,
 			",locktime:%}}",
 			JSON_SCAN(json_to_node_id, &info->id),
 			JSON_SCAN(json_to_channel_id, &info->cid),
-			JSON_SCAN(json_to_sat, &info->their_funding),
+			JSON_SCAN(json_to_msat_as_sats, &info->their_funding),
 			JSON_SCAN(json_to_msat, &max_htlc_inflight),
 			JSON_SCAN(json_to_msat, &htlc_minimum),
 			JSON_SCAN(json_to_u64, &info->funding_feerate_perkw),
@@ -547,7 +575,7 @@ json_openchannel2_call(struct command *cmd,
 			"requested_lease_msat:%"
 			",lease_blockheight_start:%"
 			",node_blockheight:%}}",
-			JSON_SCAN(json_to_sat, &info->requested_lease),
+			JSON_SCAN(json_to_msat_as_sats, &info->requested_lease),
 			JSON_SCAN(json_to_u32, &info->node_blockheight),
 			JSON_SCAN(json_to_u32, &info->lease_blockheight));
 
@@ -561,7 +589,7 @@ json_openchannel2_call(struct command *cmd,
 	/* If there's no channel_max, it's actually infinity */
 	err = json_scan(tmpctx, buf, params,
 			"{openchannel2:{channel_max_msat:%}}",
-			JSON_SCAN(json_to_sat, &info->channel_max));
+			JSON_SCAN(json_to_msat_as_sats, &info->channel_max));
 	if (err)
 		info->channel_max = AMOUNT_SAT(UINT64_MAX);
 
@@ -651,14 +679,14 @@ json_rbf_channel_call(struct command *cmd,
 			"{rbf_channel:"
 			"{id:%"
 			",channel_id:%"
-			",their_funding:%"
+			",their_funding_msat:%"
 			",funding_feerate_per_kw:%"
 			",feerate_our_max:%"
 			",feerate_our_min:%"
 			",locktime:%}}",
 			JSON_SCAN(json_to_node_id, &info->id),
 			JSON_SCAN(json_to_channel_id, &info->cid),
-			JSON_SCAN(json_to_sat, &info->their_funding),
+			JSON_SCAN(json_to_msat_as_sats, &info->their_funding),
 			JSON_SCAN(json_to_u64, &info->funding_feerate_perkw),
 			JSON_SCAN(json_to_u64, &feerate_our_max),
 			JSON_SCAN(json_to_u64, &feerate_our_min),
@@ -673,7 +701,7 @@ json_rbf_channel_call(struct command *cmd,
 	/* If there's no channel_max, it's actually infinity */
 	err = json_scan(tmpctx, buf, params,
 			"{rbf_channel:{channel_max_msat:%}}",
-			JSON_SCAN(json_to_sat, &info->channel_max));
+			JSON_SCAN(json_to_msat_as_sats, &info->channel_max));
 	if (err)
 		info->channel_max = AMOUNT_SAT(UINT64_MAX);
 
@@ -768,15 +796,15 @@ static void json_add_policy(struct json_stream *stream,
 			funder_opt_name(policy->opt));
 	json_add_num(stream, "policy_mod", policy->mod);
 	json_add_bool(stream, "leases_only", policy->leases_only);
-	json_add_amount_sat_only(stream, "min_their_funding_msat",
+	json_add_amount_sat_msat(stream, "min_their_funding_msat",
 				 policy->min_their_funding);
-	json_add_amount_sat_only(stream, "max_their_funding_msat",
+	json_add_amount_sat_msat(stream, "max_their_funding_msat",
 				 policy->max_their_funding);
-	json_add_amount_sat_only(stream, "per_channel_min_msat",
+	json_add_amount_sat_msat(stream, "per_channel_min_msat",
 				 policy->per_channel_min);
-	json_add_amount_sat_only(stream, "per_channel_max_msat",
+	json_add_amount_sat_msat(stream, "per_channel_max_msat",
 				 policy->per_channel_max);
-	json_add_amount_sat_only(stream, "reserve_tank_msat",
+	json_add_amount_sat_msat(stream, "reserve_tank_msat",
 				 policy->reserve_tank);
 	json_add_num(stream, "fuzz_percent", policy->fuzz_factor);
 	json_add_num(stream, "fund_probability", policy->fund_probability);
@@ -926,19 +954,19 @@ json_funderupdate(struct command *cmd,
 			     current_policy->mod),
 		   p_opt_def("leases_only", param_bool, &leases_only,
 			     current_policy->leases_only),
-		   p_opt_def("min_their_funding_msat", param_sat,
+		   p_opt_def("min_their_funding_msat", param_msat_as_sat,
 			     &min_their_funding,
 			     current_policy->min_their_funding),
-		   p_opt_def("max_their_funding_msat", param_sat,
+		   p_opt_def("max_their_funding_msat", param_msat_as_sat,
 			     &max_their_funding,
 			     current_policy->max_their_funding),
-		   p_opt_def("per_channel_min_msat", param_sat,
+		   p_opt_def("per_channel_min_msat", param_msat_as_sat,
 			     &per_channel_min,
 			     current_policy->per_channel_min),
-		   p_opt_def("per_channel_max_msat", param_sat,
+		   p_opt_def("per_channel_max_msat", param_msat_as_sat,
 			     &per_channel_max,
 			     current_policy->per_channel_max),
-		   p_opt_def("reserve_tank_msat", param_sat, &reserve_tank,
+		   p_opt_def("reserve_tank_msat", param_msat_as_sat, &reserve_tank,
 			     current_policy->reserve_tank),
 		   p_opt_def("fuzz_percent", param_number,
 			     &fuzz_factor,
@@ -946,7 +974,7 @@ json_funderupdate(struct command *cmd,
 		   p_opt_def("fund_probability", param_number,
 			     &fund_probability,
 			     current_policy->fund_probability),
-		   p_opt("lease_fee_base_msat", param_sat, &lease_fee_sats),
+		   p_opt("lease_fee_base_msat", param_msat_as_sat, &lease_fee_sats),
 		   p_opt("lease_fee_basis", param_number, &lease_fee_basis),
 		   p_opt("funding_weight", param_number, &funding_weight),
 		   p_opt("channel_fee_max_base_msat", param_msat,
@@ -1022,16 +1050,15 @@ static void tell_lightningd_lease_rates(struct plugin *p,
 					struct lease_rates *rates)
 {
 	struct json_out *jout;
-	struct amount_sat val;
 	struct amount_msat mval;
 
 	/* Tell lightningd with our lease rates*/
 	jout = json_out_new(NULL);
 	json_out_start(jout, NULL, '{');
 
-	val = amount_sat(rates->lease_fee_base_sat);
+	mval = amount_msat(rates->lease_fee_base_sat * 1000);
 	json_out_addstr(jout, "lease_fee_base_msat",
-			type_to_string(tmpctx, struct amount_sat, &val));
+			type_to_string(tmpctx, struct amount_msat, &mval));
 	json_out_add(jout, "lease_fee_basis", false,
 		     "%d", rates->lease_fee_basis);
 
@@ -1050,7 +1077,7 @@ static void tell_lightningd_lease_rates(struct plugin *p,
 	rpc_scan(p, "setleaserates", take(jout),
 		 /* Unused */
 		 "{lease_fee_base_msat:%}",
-		 JSON_SCAN(json_to_sat, &val));
+		 JSON_SCAN(json_to_msat, &mval));
 
 }
 

@@ -48,8 +48,9 @@ network between you and the Internet, as long as you can use Tor you can
 be connected to.
 
 Note: Core Lightning also support IPv4/6 address discovery behind NAT routers.
-For this to work you need to forward the TCP port 9735 to your node.
+For this to work you need to forward the default TCP port 9735 to your node.
 In this case you don't need TOR to punch through your firewall.
+IP discovery is only active if no other addresses are announced.
 This usually has the benefit of quicker and more stable connections but does not
 offer additional privacy.
 
@@ -62,6 +63,7 @@ On most Linux distributions there will be commented-out settings below in the
 ```
 ControlPort 9051
 CookieAuthentication 1
+CookieAuthFile /var/lib/tor/control_auth_cookie
 CookieAuthFileGroupReadable 1
 ```
 
@@ -185,10 +187,9 @@ on those.
 
 #### Three Ways to Create .onion Addresses for Core Lightning
 
-You have have Tor create an onion address for you, and tell
-Core Lightning to use that, or you can have Core Lightning tell Tor to
-create the same onion address every time it starts up, or you can have
-Core Lightning tell Tor to create a new onion address every time.
+1. You can configure Tor to create an onion address for you, and tell Core Lightning to use that address
+2. You can have Core Lightning tell Tor to create a new onion address every time
+3. You can configure Core Lightning to tell Tor to create the same onion address every time it starts up
 
 #### Tor-Created .onion Address
 

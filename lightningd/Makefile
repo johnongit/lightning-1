@@ -10,13 +10,13 @@ LIGHTNINGD_SRC :=				\
 	lightningd/dual_open_control.c		\
 	lightningd/connect_control.c		\
 	lightningd/onion_message.c		\
+	lightningd/feerate.c			\
 	lightningd/gossip_control.c		\
 	lightningd/hsm_control.c		\
 	lightningd/htlc_end.c			\
 	lightningd/htlc_set.c			\
 	lightningd/invoice.c			\
 	lightningd/io_loop_with_timers.c	\
-	lightningd/json.c			\
 	lightningd/jsonrpc.c			\
 	lightningd/lightningd.c			\
 	lightningd/log.c			\
@@ -90,9 +90,9 @@ LIGHTNINGD_COMMON_OBJS :=			\
 	common/features.o			\
 	common/fee_states.o			\
 	common/peer_status_wiregen.o		\
+	common/scb_wiregen.o            	\
 	common/status_levels.o			\
 	common/status_wiregen.o			\
-	common/gossip_rcvd_filter.o		\
 	common/hash_u5.o			\
 	common/hmac.o				\
 	common/hsm_encryption.o			\
@@ -101,17 +101,16 @@ LIGHTNINGD_COMMON_OBJS :=			\
 	common/htlc_wire.o			\
 	common/key_derive.o			\
 	common/keyset.o				\
-	common/json.o				\
-	common/json_helpers.o			\
+	common/json_param.o			\
+	common/json_parse.o			\
+	common/json_parse_simple.o		\
 	common/json_stream.o			\
-	common/json_tok.o			\
 	common/lease_rates.o			\
 	common/memleak.o			\
 	common/msg_queue.o			\
 	common/node_id.o			\
 	common/onion.o				\
 	common/onionreply.o			\
-	common/param.o				\
 	common/penalty_base.o			\
 	common/per_peer_state.o			\
 	common/permute_tx.o			\

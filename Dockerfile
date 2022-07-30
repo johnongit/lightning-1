@@ -1,11 +1,11 @@
 # This dockerfile is meant to compile a core-lightning x64 image
 # It is using multi stage build:
 # * downloader: Download litecoin/bitcoin and qemu binaries needed for core-lightning
-# * builder: Compile core-lightning dependencies, then c-lightning itself with static linking
+# * builder: Compile core-lightning dependencies, then core-lightning itself with static linking
 # * final: Copy the binaries required at runtime
 # The resulting image uploaded to dockerhub will only contain what is needed for runtime.
 # From the root of the repository, run "docker build -t yourimage:yourtag ."
-FROM debian:buster-slim as downloader
+FROM debian:bullseye-slim as downloader
 
 RUN set -ex \
 	&& apt-get update \
@@ -45,30 +45,7 @@ RUN mkdir /opt/litecoin && cd /opt/litecoin \
     && tar -xzvf litecoin.tar.gz $BD/litecoin-cli --strip-components=1 --exclude=*-qt \
     && rm litecoin.tar.gz
 
-
-FROM debian:buster-slim as build-rust
-
-RUN apt-get update && \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        build-essential \
-        ca-certificates \
-        curl \
-        git \
-        ssh \
-        libssl-dev \
-        pkg-config && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
-
-ENV RUSTUP_HOME=/rust
-ENV CARGO_HOME=/cargo
-ENV PATH=/cargo/bin:/rust/bin:$PATH
-
-RUN echo "(curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain nightly --no-modify-path) && rustup default nightly" > /install-rust.sh && chmod 755 /install-rust.sh && /install-rust.sh && \
-    cargo install c-lightning-pruning-plugin
-
-
-FROM debian:buster-slim as builder
+FROM debian:bullseye-slim as builder
 
 ENV LIGHTNINGD_VERSION=master
 RUN apt-get update -qq && \
@@ -135,6 +112,11 @@ RUN wget -q https://gmplib.org/download/gmp/gmp-6.1.2.tar.xz \
 && make \
 && make install && cd .. && rm gmp-6.1.2.tar.xz && rm -rf gmp-6.1.2
 
+ENV RUST_PROFILE=release
+ENV PATH=$PATH:/root/.cargo/bin/
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+RUN rustup toolchain install stable --component rustfmt --allow-downgrade
+
 WORKDIR /opt/lightningd
 COPY . /tmp/lightning
 RUN git clone --recursive /tmp/lightning . && \
@@ -149,7 +131,7 @@ RUN curl -sSL https://raw.githubusercontent.com/python-poetry/poetry/master/inst
 
 RUN ./configure --prefix=/tmp/lightning_install --enable-static && make -j3 DEVELOPER=${DEVELOPER} && make install
 
-FROM debian:buster-slim as final
+FROM debian:bullseye-slim as final
 
 COPY --from=downloader /opt/tini /usr/bin/tini
 
@@ -200,7 +182,7 @@ VOLUME [ "/root/.lightning" ]
 COPY --from=builder /tmp/lightning_install/ /usr/local/
 COPY --from=downloader /opt/bitcoin/bin /usr/bin
 COPY --from=downloader /opt/litecoin/bin /usr/bin
-COPY --from=build-rust /cargo/bin/c-lightning-pruning-plugin /usr/bin/
+
 
 COPY tools/docker-entrypoint.sh entrypoint.sh
 

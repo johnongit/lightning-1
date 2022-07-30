@@ -3,6 +3,7 @@ pub use anyhow::{anyhow, Context};
 use futures::sink::SinkExt;
 extern crate log;
 use log::trace;
+use messages::Configuration;
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -44,8 +45,10 @@ where
 
     hooks: HashMap<String, Hook<S>>,
     options: Vec<ConfigOption>,
+    configuration: Option<Configuration>,
     rpcmethods: HashMap<String, RpcMethod<S>>,
     subscriptions: HashMap<String, Subscription<S>>,
+    dynamic: bool,
 }
 
 impl<S, I, O> Builder<S, I, O>
@@ -62,7 +65,9 @@ where
             hooks: HashMap::new(),
             subscriptions: HashMap::new(),
             options: vec![],
+            configuration: None,
             rpcmethods: HashMap::new(),
+            dynamic: false,
         }
     }
 
@@ -139,6 +144,12 @@ where
         self
     }
 
+    /// Send true value for "dynamic" field in "getmanifest" response
+    pub fn dynamic(mut self) -> Builder<S, I, O> {
+        self.dynamic = true;
+        self
+    }
+
     /// Communicate with `lightningd` to tell it about our options,
     /// RPC methods and subscribe to hooks, and then process the
     /// initialization, configuring the plugin.
@@ -207,6 +218,9 @@ where
         let plugin = Plugin {
             state: self.state,
             options: self.options,
+            configuration: self
+                .configuration
+                .ok_or(anyhow!("Plugin configuration missing"))?,
             wait_handle,
             sender,
         };
@@ -274,6 +288,7 @@ where
             subscriptions: self.subscriptions.keys().map(|s| s.clone()).collect(),
             hooks: self.hooks.keys().map(|s| s.clone()).collect(),
             rpcmethods,
+            dynamic: self.dynamic,
         }
     }
 
@@ -296,6 +311,8 @@ where
                 });
             }
         }
+
+        self.configuration = Some(call.configuration);
 
         Ok(messages::InitResponse::default())
     }
@@ -362,8 +379,10 @@ where
 {
     /// The state gets cloned for each request
     state: S,
+    /// "options" field of "init" message sent by cln
     options: Vec<ConfigOption>,
-
+    /// "configuration" field of "init" message sent by cln
+    configuration: Configuration,
     /// A signal that allows us to wait on the plugin's shutdown.
     wait_handle: tokio::sync::broadcast::Sender<()>,
 
@@ -408,13 +427,19 @@ where
             ))
             .await
             .context("sending init response")?;
+
+        let joiner = plugin.wait_handle.clone();
         // Start the PluginDriver to handle plugin IO
-        tokio::spawn(
-            driver.run(receiver, input, output),
-            // TODO Use the broadcast to distribute any error that we
-            // might receive here to anyone listening. (Shutdown
-            // signal)
-        );
+        tokio::spawn(async move {
+            if let Err(e) = driver.run(receiver, input, output).await {
+		log::warn!("Plugin loop returned error {:?}", e);
+	    }
+
+            // Now that we have left the reader loop its time to
+            // notify any waiting tasks. This most likely will cause
+            // the main task to exit and the plugin to terminate.
+            joiner.send(())
+        });
         Ok(plugin)
     }
 
@@ -483,16 +508,17 @@ where
             // the user-code, which may require some cleanups or
             // similar.
             tokio::select! {
-                    e = self.dispatch_one(&mut input, &self.plugin) => {
-                //Hand any error up.
-                e?;
-            },
-            v = receiver.recv() => {
-                output.lock().await.send(
-                v.context("internal communication error")?
-                ).await?;
-            },
-                }
+                e = self.dispatch_one(&mut input, &self.plugin) => {
+                    if let Err(e) = e {
+			return Err(e)
+                    }
+		},
+		v = receiver.recv() => {
+                    output.lock().await.send(
+			v.context("internal communication error")?
+                    ).await?;
+		},
+            }
         }
     }
 
@@ -634,6 +660,9 @@ where
 {
     pub fn options(&self) -> Vec<ConfigOption> {
         self.options.clone()
+    }
+    pub fn configuration(&self) -> Configuration {
+        self.configuration.clone()
     }
     pub fn state(&self) -> &S {
         &self.state

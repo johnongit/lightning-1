@@ -39,6 +39,7 @@ static void show_usage(const char *progname)
 	printf("	- guesstoremote <P2WPKH address> <node id> <tries> "
 	       "<path/to/hsm_secret>\n");
 	printf("	- generatehsm <path/to/new/hsm_secret>\n");
+	printf("	- checkhsm <path/to/new/hsm_secret>\n");
 	printf("	- dumponchaindescriptors <path/to/hsm_secret> [network]\n");
 	exit(0);
 }
@@ -73,9 +74,9 @@ static void get_hsm_secret(struct secret *hsm_secret,
 
 	fd = open(hsm_secret_path, O_RDONLY);
 	if (fd < 0)
-		errx(ERROR_HSM_FILE, "Could not open hsm_secret");
+		errx(EXITCODE_ERROR_HSM_FILE, "Could not open hsm_secret");
 	if (!read_all(fd, hsm_secret, sizeof(*hsm_secret)))
-		errx(ERROR_HSM_FILE, "Could not read hsm_secret");
+		errx(EXITCODE_ERROR_HSM_FILE, "Could not read hsm_secret");
 	close(fd);
 }
 
@@ -93,10 +94,10 @@ static void get_encrypted_hsm_secret(struct secret *hsm_secret,
 
 	fd = open(hsm_secret_path, O_RDONLY);
 	if (fd < 0)
-		errx(ERROR_HSM_FILE, "Could not open hsm_secret");
+		errx(EXITCODE_ERROR_HSM_FILE, "Could not open hsm_secret");
 
 	if (!read_all(fd, encrypted_secret.data, ENCRYPTED_HSM_SECRET_LEN))
-		errx(ERROR_HSM_FILE, "Could not read encrypted hsm_secret");
+		errx(EXITCODE_ERROR_HSM_FILE, "Could not read encrypted hsm_secret");
 
 	exit_code = hsm_secret_encryption_key_with_exitcode(passwd, &key, &err);
 	if (exit_code > 0)
@@ -148,7 +149,7 @@ static bool hsm_secret_is_encrypted(const char *hsm_secret_path)
 {
         switch (is_hsm_secret_encrypted(hsm_secret_path)) {
 		case -1:
-			err(ERROR_HSM_FILE, "Cannot open '%s'", hsm_secret_path);
+			err(EXITCODE_ERROR_HSM_FILE, "Cannot open '%s'", hsm_secret_path);
 		case 1:
 			return true;
 	        case 0: {
@@ -156,7 +157,7 @@ static bool hsm_secret_is_encrypted(const char *hsm_secret_path)
 			struct stat st;
 			stat(hsm_secret_path, &st);
 			if (st.st_size != 32)
-				errx(ERROR_HSM_FILE,
+				errx(EXITCODE_ERROR_HSM_FILE,
 				     "Invalid hsm_secret '%s' (neither plaintext "
 				     "nor encrypted).", hsm_secret_path);
 			return false;
@@ -198,13 +199,13 @@ static int decrypt_hsm(const char *hsm_secret_path)
 	rename(hsm_secret_path, backup);
 	fd = open(hsm_secret_path, O_CREAT|O_EXCL|O_WRONLY, 0400);
 	if (fd < 0)
-		errx(ERROR_HSM_FILE, "Could not open new hsm_secret");
+		errx(EXITCODE_ERROR_HSM_FILE, "Could not open new hsm_secret");
 
 	if (!write_all(fd, &hsm_secret, sizeof(hsm_secret))) {
 		unlink_noerr(hsm_secret_path);
 		close(fd);
 		rename("hsm_secret.backup", hsm_secret_path);
-		errx(ERROR_HSM_FILE,
+		errx(EXITCODE_ERROR_HSM_FILE,
 		    "Failure writing plaintext seed to hsm_secret.");
 	}
 
@@ -212,7 +213,7 @@ static int decrypt_hsm(const char *hsm_secret_path)
 	if (!ensure_hsm_secret_exists(fd, hsm_secret_path)) {
 		unlink_noerr(hsm_secret_path);
 		rename(backup, hsm_secret_path);
-		errx(ERROR_HSM_FILE,
+		errx(EXITCODE_ERROR_HSM_FILE,
 		    "Could not ensure hsm_secret existence.");
 	}
 	unlink_noerr(backup);
@@ -272,7 +273,7 @@ static int encrypt_hsm(const char *hsm_secret_path)
 	rename(hsm_secret_path, backup);
 	fd = open(hsm_secret_path, O_CREAT|O_EXCL|O_WRONLY, 0400);
 	if (fd < 0)
-		errx(ERROR_HSM_FILE, "Could not open new hsm_secret");
+		errx(EXITCODE_ERROR_HSM_FILE, "Could not open new hsm_secret");
 
 	/* Write the encrypted hsm_secret. */
 	if (!write_all(fd, encrypted_hsm_secret.data,
@@ -280,14 +281,14 @@ static int encrypt_hsm(const char *hsm_secret_path)
 		unlink_noerr(hsm_secret_path);
 		close(fd);
 		rename(backup, hsm_secret_path);
-		errx(ERROR_HSM_FILE, "Failure writing cipher to hsm_secret.");
+		errx(EXITCODE_ERROR_HSM_FILE, "Failure writing cipher to hsm_secret.");
 	}
 
 	/* Be as paranoïd as in hsmd with the file state on disk. */
 	if (!ensure_hsm_secret_exists(fd, hsm_secret_path)) {
 		unlink_noerr(hsm_secret_path);
 		rename(backup, hsm_secret_path);
-		errx(ERROR_HSM_FILE, "Could not ensure hsm_secret existence.");
+		errx(EXITCODE_ERROR_HSM_FILE, "Could not ensure hsm_secret existence.");
 	}
 	unlink_noerr(backup);
 	tal_free(dir);
@@ -595,6 +596,60 @@ static int dumponchaindescriptors(const char *hsm_secret_path, const char *old_p
 	return 0;
 }
 
+static int check_hsm(const char *hsm_secret_path)
+{
+	char mnemonic[BIP39_WORDLIST_LEN];
+	struct secret hsm_secret;
+	u8 bip32_seed[BIP39_SEED_LEN_512];
+	size_t bip32_seed_len;
+	int exit_code;
+	char *passphrase, *err;
+
+	/* This checks the file existence, too. */
+	if (hsm_secret_is_encrypted(hsm_secret_path)) {
+		char *passwd;
+
+		printf("Enter hsm_secret password:\n");
+		fflush(stdout);
+		passwd = read_stdin_pass_with_exit_code(&err, &exit_code);
+		if (!passwd)
+			errx(exit_code, "%s", err);
+
+		if (sodium_init() == -1)
+			errx(ERROR_LIBSODIUM,
+			     "Could not initialize libsodium. Not enough entropy ?");
+
+		get_encrypted_hsm_secret(&hsm_secret, hsm_secret_path, passwd);
+		/* Once the encryption key derived, we don't need it anymore. */
+		free(passwd);
+	} else
+		get_hsm_secret(&hsm_secret, hsm_secret_path);
+
+	printf("Warning: remember that different passphrases yield different "
+	       "bitcoin wallets.\n");
+	printf("If left empty, no password is used (echo is disabled).\n");
+	printf("Enter your passphrase: \n");
+	fflush(stdout);
+	passphrase = read_stdin_pass_with_exit_code(&err, &exit_code);
+	if (!passphrase)
+		errx(exit_code, "%s", err);
+	if (strlen(passphrase) == 0) {
+		free(passphrase);
+		passphrase = NULL;
+	}
+
+	read_mnemonic(mnemonic);
+	if (bip39_mnemonic_to_seed(mnemonic, passphrase, bip32_seed, sizeof(bip32_seed), &bip32_seed_len) != WALLY_OK)
+		errx(ERROR_LIBWALLY, "Unable to derive BIP32 seed from BIP39 mnemonic");
+
+	/* We only use first 32 bytes */
+	if (memcmp(bip32_seed, hsm_secret.data, sizeof(hsm_secret.data)) != 0)
+		errx(ERROR_KEYDERIV, "resulting hsm_secret did not match");
+
+	printf("OK\n");
+	return 0;
+}
+
 int main(int argc, char *argv[])
 {
 	const char *method;
@@ -680,6 +735,12 @@ int main(int argc, char *argv[])
 			is_testnet = false;
 
 		return dumponchaindescriptors(argv[2], NULL, is_testnet);
+	}
+
+	if (streq(method, "checkhsm")) {
+		if (argc < 3)
+			show_usage(argv[0]);
+		return check_hsm(argv[2]);
 	}
 
 	show_usage(argv[0]);

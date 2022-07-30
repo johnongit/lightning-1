@@ -2,9 +2,11 @@ from fixtures import *  # noqa: F401,F403
 from fixtures import TEST_NETWORK
 from pyln.client import RpcError, Millisatoshi
 from utils import (
-    only_one, wait_for, sync_blockheight, first_channel_id, calc_lease_fee
+    only_one, wait_for, sync_blockheight, first_channel_id, calc_lease_fee, check_coin_moves
 )
 
+from pathlib import Path
+from pprint import pprint
 import pytest
 import re
 import unittest
@@ -19,7 +21,7 @@ def find_next_feerate(node, peer):
 @pytest.mark.openchannel('v2')
 @pytest.mark.developer("requres 'dev-queryrates'")
 def test_queryrates(node_factory, bitcoind):
-    l1, l2 = node_factory.get_nodes(2)
+    l1, l2 = node_factory.get_nodes(2, opts={'dev-no-reconnect': None})
 
     amount = 10 ** 6
 
@@ -40,6 +42,7 @@ def test_queryrates(node_factory, bitcoind):
                                  'channel_fee_max_base_msat': '3sat',
                                  'channel_fee_max_proportional_thousandths': 101})
 
+    wait_for(lambda: l1.rpc.listpeers()['peers'] == [])
     l1.rpc.connect(l2.info['id'], 'localhost', l2.port)
     result = l1.rpc.dev_queryrates(l2.info['id'], amount, amount)
     assert result['our_funding_msat'] == Millisatoshi(amount * 1000)
@@ -167,10 +170,12 @@ def test_v2_open_sigs_restart(node_factory, bitcoind):
     assert log
     psbt = re.search("psbt (.*)", log).group(1)
 
-    l1.rpc.connect(l2.info['id'], 'localhost', l2.port)
     l1.daemon.wait_for_log('Peer has reconnected, state DUALOPEND_OPEN_INIT')
-    with pytest.raises(RpcError):
+    try:
+        # FIXME: why do we need to retry signed?
         l1.rpc.openchannel_signed(chan_id, psbt)
+    except RpcError:
+        pass
 
     l2.daemon.wait_for_log('Broadcasting funding tx')
     txid = l2.rpc.listpeers(l1.info['id'])['peers'][0]['channels'][0]['funding_txid']
@@ -216,10 +221,12 @@ def test_v2_open_sigs_restart_while_dead(node_factory, bitcoind):
     assert log
     psbt = re.search("psbt (.*)", log).group(1)
 
-    l1.rpc.connect(l2.info['id'], 'localhost', l2.port)
     l1.daemon.wait_for_log('Peer has reconnected, state DUALOPEND_OPEN_INIT')
-    with pytest.raises(RpcError):
+    try:
+        # FIXME: why do we need to retry signed?
         l1.rpc.openchannel_signed(chan_id, psbt)
+    except RpcError:
+        pass
 
     l2.daemon.wait_for_log('Broadcasting funding tx')
     l2.daemon.wait_for_log('sendrawtx exit 0')
@@ -352,7 +359,7 @@ def test_v2_rbf_liquidity_ad(node_factory, bitcoind, chainparams):
     # l1 leases a channel from l2
     l1.rpc.connect(l2.info['id'], 'localhost', l2.port)
     rates = l1.rpc.dev_queryrates(l2.info['id'], amount, amount)
-    l1.daemon.wait_for_log('disconnect')
+    wait_for(lambda: l1.rpc.listpeers()['peers'] == [])
     l1.rpc.connect(l2.info['id'], 'localhost', l2.port)
     chan_id = l1.rpc.fundchannel(l2.info['id'], amount, request_amt=amount,
                                  feerate='{}perkw'.format(feerate),
@@ -414,10 +421,12 @@ def test_v2_rbf_liquidity_ad(node_factory, bitcoind, chainparams):
 
 
 @unittest.skipIf(TEST_NETWORK != 'regtest', 'elementsd doesnt yet support PSBT features we need')
+@pytest.mark.developer("uses dev-no-reconnect")
 @pytest.mark.openchannel('v2')
 def test_v2_rbf_multi(node_factory, bitcoind, chainparams):
     l1, l2 = node_factory.get_nodes(2,
                                     opts={'may_reconnect': True,
+                                          'dev-no-reconnect': None,
                                           'allow_warning': True})
 
     l1.rpc.connect(l2.info['id'], 'localhost', l2.port)
@@ -461,6 +470,7 @@ def test_v2_rbf_multi(node_factory, bitcoind, chainparams):
     # Abort this open attempt! We will re-try
     aborted = l1.rpc.openchannel_abort(chan_id)
     assert not aborted['channel_canceled']
+    wait_for(lambda: only_one(l1.rpc.listpeers()['peers'])['connected'] is False)
 
     # Do the bump, again, same feerate
     l1.rpc.connect(l2.info['id'], 'localhost', l2.port)
@@ -617,8 +627,10 @@ def test_rbf_reconnect_tx_construct(node_factory, bitcoind, chainparams):
 
     l1, l2 = node_factory.get_nodes(2,
                                     opts=[{'disconnect': disconnects,
-                                           'may_reconnect': True},
-                                          {'may_reconnect': True}])
+                                           'may_reconnect': True,
+                                           'dev-no-reconnect': None},
+                                          {'may_reconnect': True,
+                                           'dev-no-reconnect': None}])
 
     l1.rpc.connect(l2.info['id'], 'localhost', l2.port)
     amount = 2**24
@@ -651,7 +663,7 @@ def test_rbf_reconnect_tx_construct(node_factory, bitcoind, chainparams):
         l1.rpc.connect(l2.info['id'], 'localhost', l2.port)
         with pytest.raises(RpcError):
             l1.rpc.openchannel_bump(chan_id, chan_amount, initpsbt['psbt'])
-        assert l1.rpc.getpeer(l2.info['id']) is not None
+        wait_for(lambda: l1.rpc.getpeer(l2.info['id'])['connected'] is False)
 
     # Now we finish off the completes failure check
     for d in disconnects[-2:]:
@@ -659,6 +671,7 @@ def test_rbf_reconnect_tx_construct(node_factory, bitcoind, chainparams):
         bump = l1.rpc.openchannel_bump(chan_id, chan_amount, initpsbt['psbt'])
         with pytest.raises(RpcError):
             update = l1.rpc.openchannel_update(chan_id, bump['psbt'])
+        wait_for(lambda: l1.rpc.getpeer(l2.info['id'])['connected'] is False)
 
     # Now we succeed
     l1.rpc.connect(l2.info['id'], 'localhost', l2.port)
@@ -1187,3 +1200,276 @@ def test_funder_contribution_limits(node_factory, bitcoind):
     l1.fundchannel(l3, 10**7)
     assert l3.daemon.is_in_log('Policy .* returned funding amount of 50000sat')
     assert l3.daemon.is_in_log(r'calling `signpsbt` .* 7 inputs')
+
+
+def test_zeroconf_mindepth(bitcoind, node_factory):
+    """Check that funder/fundee can customize mindepth.
+
+    Zeroconf will use this to set the mindepth to 0, which coupled
+    with an artificial depth=0 event that will result in an immediate
+    `channel_ready` being sent.
+
+    """
+    plugin_path = Path(__file__).parent / "plugins" / "zeroconf-selective.py"
+
+    l1, l2 = node_factory.get_nodes(2, opts=[
+        {},
+        {
+            'plugin': str(plugin_path),
+            'zeroconf-allow': '0266e4598d1d3c415f572a8488830b60f7e744ed9235eb0b1ba93283b315c03518',
+            'zeroconf-mindepth': '2',
+        },
+    ])
+
+    # Try to open a mindepth=6 channel
+    l1.fundwallet(10**6)
+
+    l1.connect(l2)
+    assert (int(l1.rpc.listpeers()['peers'][0]['features'], 16) >> 50) & 0x02 != 0
+
+    # Now start the negotiation, l1 should have negotiated zeroconf,
+    # and use their own mindepth=6, while l2 uses mindepth=2 from the
+    # plugin
+    l1.rpc.fundchannel(l2.info['id'], 'all', mindepth=6)
+
+    assert l1.db.query('SELECT minimum_depth FROM channels') == [{'minimum_depth': 6}]
+    assert l2.db.query('SELECT minimum_depth FROM channels') == [{'minimum_depth': 2}]
+
+    bitcoind.generate_block(2, wait_for_mempool=1)  # Confirm on the l2 side.
+    l2.daemon.wait_for_log(r'peer_out WIRE_FUNDING_LOCKED')
+    # l1 should not be sending funding_locked/channel_ready yet, it is
+    # configured to wait for 6 confirmations.
+    assert not l1.daemon.is_in_log(r'peer_out WIRE_FUNDING_LOCKED')
+
+    bitcoind.generate_block(4)  # Confirm on the l2 side.
+    l1.daemon.wait_for_log(r'peer_out WIRE_FUNDING_LOCKED')
+
+    wait_for(lambda: l1.rpc.listpeers()['peers'][0]['channels'][0]['state'] == "CHANNELD_NORMAL")
+    wait_for(lambda: l2.rpc.listpeers()['peers'][0]['channels'][0]['state'] == "CHANNELD_NORMAL")
+
+
+def test_zeroconf_open(bitcoind, node_factory):
+    """Let's open a zeroconf channel
+
+    Just test that both parties opting in results in a channel that is
+    immediately usable.
+
+    """
+    plugin_path = Path(__file__).parent / "plugins" / "zeroconf-selective.py"
+
+    l1, l2 = node_factory.get_nodes(2, opts=[
+        {},
+        {
+            'plugin': str(plugin_path),
+            'zeroconf-allow': '0266e4598d1d3c415f572a8488830b60f7e744ed9235eb0b1ba93283b315c03518'
+        },
+    ])
+
+    # Try to open a mindepth=0 channel
+    l1.fundwallet(10**6)
+
+    l1.connect(l2)
+    assert (int(l1.rpc.listpeers()['peers'][0]['features'], 16) >> 50) & 0x02 != 0
+
+    # Now start the negotiation, l1 should have negotiated zeroconf,
+    # and use their own mindepth=6, while l2 uses mindepth=2 from the
+    # plugin
+    l1.rpc.fundchannel(l2.info['id'], 'all', mindepth=0)
+
+    assert l1.db.query('SELECT minimum_depth FROM channels') == [{'minimum_depth': 0}]
+    assert l2.db.query('SELECT minimum_depth FROM channels') == [{'minimum_depth': 0}]
+
+    l1.daemon.wait_for_logs([
+        r'peer_in WIRE_FUNDING_LOCKED',
+        r'Peer told us that they\'ll use alias=[0-9x]+ for this channel',
+    ])
+    l2.daemon.wait_for_logs([
+        r'peer_in WIRE_FUNDING_LOCKED',
+        r'Peer told us that they\'ll use alias=[0-9x]+ for this channel',
+    ])
+
+    wait_for(lambda: l1.rpc.listpeers()['peers'][0]['channels'][0]['state'] == 'CHANNELD_NORMAL')
+    wait_for(lambda: l2.rpc.listpeers()['peers'][0]['channels'][0]['state'] == 'CHANNELD_NORMAL')
+    wait_for(lambda: l2.rpc.listincoming()['incoming'] != [])
+
+    inv = l2.rpc.invoice(10**8, 'lbl', 'desc')['bolt11']
+    details = l1.rpc.decodepay(inv)
+    pprint(details)
+    assert('routes' in details and len(details['routes']) == 1)
+    hop = details['routes'][0][0]  # First (and only) hop of hint 0
+    l1alias = l1.rpc.listpeers()['peers'][0]['channels'][0]['alias']['local']
+    assert(hop['pubkey'] == l1.info['id'])  # l1 is the entrypoint
+    assert(hop['short_channel_id'] == l1alias)  # Alias has to make sense to entrypoint
+    l1.rpc.pay(inv)
+
+    # Ensure lightningd knows about the balance change before
+    # attempting the other way around.
+    l2.daemon.wait_for_log(r'Balance [0-9]+msat -> [0-9]+msat')
+
+    # Inverse payments should work too
+    pprint(l2.rpc.listpeers())
+    inv = l1.rpc.invoice(10**5, 'lbl', 'desc')['bolt11']
+    l2.rpc.pay(inv)
+
+
+def test_zeroconf_public(bitcoind, node_factory, chainparams):
+    """Test that we transition correctly from zeroconf to public
+
+    The differences being that a public channel MUST use the public
+    scid. l1 and l2 open a zeroconf channel, then l3 learns about it
+    after 6 confirmations.
+
+    """
+    plugin_path = Path(__file__).parent / "plugins" / "zeroconf-selective.py"
+    coin_mvt_plugin = Path(__file__).parent / "plugins" / "coin_movements.py"
+
+    l1, l2, l3 = node_factory.get_nodes(3, opts=[
+        {'plugin': str(coin_mvt_plugin)},
+        {
+            'plugin': str(plugin_path),
+            'zeroconf-allow': '0266e4598d1d3c415f572a8488830b60f7e744ed9235eb0b1ba93283b315c03518'
+        },
+        {}
+    ])
+    # Advances blockheight to 102
+    l1.fundwallet(10**6)
+    push_msat = 20000 * 1000
+    l1.connect(l2)
+    l1.rpc.fundchannel(l2.info['id'], 'all', mindepth=0, push_msat=push_msat)
+
+    # Wait for the update to be signed (might not be the most reliable
+    # signal)
+    l1.daemon.wait_for_log(r'Got WIRE_HSMD_CUPDATE_SIG_REQ')
+    l2.daemon.wait_for_log(r'Got WIRE_HSMD_CUPDATE_SIG_REQ')
+
+    l1chan = l1.rpc.listpeers()['peers'][0]['channels'][0]
+    l2chan = l2.rpc.listpeers()['peers'][0]['channels'][0]
+    channel_id = l1chan['channel_id']
+
+    # We have no confirmation yet, so no `short_channel_id`
+    assert('short_channel_id' not in l1chan)
+    assert('short_channel_id' not in l2chan)
+
+    # Channel is "proposed"
+    chan_val = 993198000 if chainparams['elements'] else 995673000
+    l1_mvts = [
+        {'type': 'chain_mvt', 'credit_msat': chan_val, 'debit_msat': 0, 'tags': ['channel_proposed', 'opener']},
+        {'type': 'channel_mvt', 'credit_msat': 0, 'debit_msat': 20000000, 'tags': ['pushed'], 'fees_msat': '0msat'},
+    ]
+    check_coin_moves(l1, l1chan['channel_id'], l1_mvts, chainparams)
+
+    # Check that the channel_open event has blockheight of zero
+    for n in [l1, l2]:
+        evs = n.rpc.bkpr_listaccountevents(channel_id)['events']
+        open_ev = only_one([e for e in evs if e['tag'] == 'channel_proposed'])
+        assert open_ev['blockheight'] == 0
+
+        # Call inspect, should have pending event in it
+        tx = only_one(n.rpc.bkpr_inspect(channel_id)['txs'])
+        assert 'blockheight' not in tx
+        assert only_one(tx['outputs'])['output_tag'] == 'channel_proposed'
+
+    # Now add 1 confirmation, we should get a `short_channel_id` (block 103)
+    bitcoind.generate_block(1)
+    l1.daemon.wait_for_log(r'Funding tx [a-f0-9]{64} depth 1 of 0')
+    l2.daemon.wait_for_log(r'Funding tx [a-f0-9]{64} depth 1 of 0')
+
+    l1chan = l1.rpc.listpeers()['peers'][0]['channels'][0]
+    l2chan = l2.rpc.listpeers()['peers'][0]['channels'][0]
+    assert('short_channel_id' in l1chan)
+    assert('short_channel_id' in l2chan)
+
+    # We also now have an 'open' event, the push event isn't re-recorded
+    l1_mvts += [
+        {'type': 'chain_mvt', 'credit_msat': chan_val, 'debit_msat': 0, 'tags': ['channel_open', 'opener']},
+    ]
+    check_coin_moves(l1, channel_id, l1_mvts, chainparams)
+
+    # Check that there is a channel_open event w/ real blockheight
+    for n in [l1, l2]:
+        evs = n.rpc.bkpr_listaccountevents(channel_id)['events']
+        # Still has the channel-proposed event
+        only_one([e for e in evs if e['tag'] == 'channel_proposed'])
+        open_ev = only_one([e for e in evs if e['tag'] == 'channel_open'])
+        assert open_ev['blockheight'] == 103
+
+        # Call inspect, should have open event in it
+        tx = only_one(n.rpc.bkpr_inspect(channel_id)['txs'])
+        assert tx['blockheight'] == 103
+        assert only_one(tx['outputs'])['output_tag'] == 'channel_open'
+
+    # Now make it public, we should be switching over to the real
+    # scid.
+    bitcoind.generate_block(5)
+    # Wait for l3 to learn about the channel, it'll have checked the
+    # funding outpoint, scripts, etc.
+    l3.connect(l1)
+    wait_for(lambda: len(l3.rpc.listchannels()['channels']) == 2)
+
+    # Close the zerconf channel, check that we mark it as onchain_resolved ok
+    l1.rpc.close(l2.info['id'])
+    bitcoind.generate_block(1, wait_for_mempool=1)
+
+    # Channel should be marked resolved
+    for n in [l1, l2]:
+        wait_for(lambda: only_one([x for x in n.rpc.bkpr_listbalances()['accounts'] if x['account'] == channel_id])['account_resolved'])
+
+
+def test_zeroconf_forward(node_factory, bitcoind):
+    """Ensure that we can use zeroconf channels in forwards.
+
+    Test that we add routehints using the zeroconf channel, and then
+    ensure that l2 uses the alias from the routehint to forward the
+    payment. Then do the inverse by sending from l3 to l1, first hop
+    being the zeroconf channel
+
+    """
+    plugin_path = Path(__file__).parent / "plugins" / "zeroconf-selective.py"
+    opts = [
+        {},
+        {},
+        {
+            'plugin': str(plugin_path),
+            'zeroconf-allow': '022d223620a359a47ff7f7ac447c85c46c923da53389221a0054c11c1e3ca31d59'
+        }
+    ]
+    l1, l2, l3 = node_factory.get_nodes(3, opts=opts)
+
+    l1.connect(l2)
+    l1.fundchannel(l2, 10**6)
+    bitcoind.generate_block(6)
+
+    l2.connect(l3)
+    l2.fundwallet(10**7)
+    l2.rpc.fundchannel(l3.info['id'], 10**6, mindepth=0)
+    wait_for(lambda: l3.rpc.listincoming()['incoming'] != [])
+
+    # Make sure (esp in non-dev-mode) blockheights agree so we don't WIRE_EXPIRY_TOO_SOON...
+    sync_blockheight(bitcoind, [l1, l2, l3])
+    inv = l3.rpc.invoice(42 * 10**6, 'inv1', 'desc')['bolt11']
+    l1.rpc.pay(inv)
+
+    # And now try the other way around: zeroconf channel first
+    # followed by a public one.
+    wait_for(lambda: len(l3.rpc.listchannels()['channels']) == 4)
+    inv = l1.rpc.invoice(42, 'back1', 'desc')['bolt11']
+    l3.rpc.pay(inv)
+
+
+@pytest.mark.openchannel('v1')
+def test_buy_liquidity_ad_no_v2(node_factory, bitcoind):
+    """ Test that you can't actually request amt for a
+    node that doesn' support v2 opens """
+
+    l1, l2, = node_factory.get_nodes(2)
+    amount = 500000
+    feerate = 2000
+
+    l1.fundwallet(amount * 100)
+    l1.rpc.connect(l2.info['id'], 'localhost', l2.port)
+
+    # l1 leases a channel from l2
+    with pytest.raises(RpcError, match=r"Tried to buy a liquidity ad but we[(][?][)] don't have experimental-dual-fund enabled"):
+        l1.rpc.fundchannel(l2.info['id'], amount, request_amt=amount,
+                           feerate='{}perkw'.format(feerate),
+                           compact_lease='029a002d000000004b2003e8')

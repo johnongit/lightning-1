@@ -9,7 +9,9 @@ SYNOPSIS
 DESCRIPTION
 -----------
 
-The **listconfigs** RPC command to list all configuration options, or with *config*, just that one.
+*config* (optional) is a configuration option name, or "plugin" to show plugin options
+
+The **listconfigs** RPC command to list all configuration options, or with *config* only a selection.
 
 The returned values reflect the current configuration, including
 showing default values (`dev-` options are not shown).
@@ -48,6 +50,8 @@ On success, an object is returned, containing:
 - **rpc-file** (string, optional): `rpc-file` field from config or cmdline, or default
 - **disable-plugin** (array of strings, optional):
   - `disable-plugin` field from config or cmdline
+- **bookkeeper-dir** (string, optional): `bookkeeper-dir` field from config or cmdline, or default
+- **bookkeeper-db** (string, optional): `bookkeeper-db` field from config or cmdline, or default
 - **always-use-proxy** (boolean, optional): `always-use-proxy` field from config or cmdline, or default
 - **daemon** (boolean, optional): `daemon` field from config or cmdline, or default
 - **wallet** (string, optional): `wallet` field from config or cmdline, or default
@@ -188,7 +192,6 @@ EXAMPLE JSON RESPONSE
    "autolisten": true,
    "proxy": "127.0.0.1:9050",
    "disable-dns": "false",
-   "enable-autotor-v2-mode": "false",
    "encrypted-hsm": false,
    "rpc-file-mode": "0600",
    "log-level": "DEBUG",
@@ -211,4 +214,4 @@ RESOURCES
 ---------
 
 Main web site: <https://github.com/ElementsProject/lightning>
-[comment]: # ( SHA256STAMP:ebc37d1f9cb452d312285a8168d2bb6da2d1dba08db56bbb8d3d7f47b58d7fa4)
+[comment]: # ( SHA256STAMP:999502771ada48f32011ea4df2443a2a3385d27377d8e55ec82cf283f9acd0a6)

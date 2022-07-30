@@ -124,7 +124,7 @@ Specify pid file to write to.
  **log-level**=*LEVEL*\[:*SUBSYSTEM*\]
 What log level to print out: options are io, debug, info, unusual,
 broken.  If *SUBSYSTEM* is supplied, this sets the logging level
-for any subsystem containing that string. This option may be specified multiple times.
+for any subsystem (or *nodeid*) containing that string. This option may be specified multiple times.
 Subsystems include:
 
 * *lightningd*: The main lightning daemon
@@ -148,15 +148,20 @@ internal integer id assigned for the lifetime of the channel:
 
   So, **log-level=debug:plugin** would set debug level logging on all
 plugins and the plugin manager.  **log-level=io:chan#55** would set
-IO logging on channel number 55 (or 550, for that matter).
+IO logging on channel number 55 (or 550, for that matter). 
+**log-level=debug:024b9a1fa8** would set debug logging for that channel
+(or any node id containing that string).
 
  **log-prefix**=*PREFIX*
-Prefix for log lines: this can be customized if you want to merge logs
-with multiple daemons.
+Prefix for all log lines: this can be customized if you want to merge logs
+with multiple daemons.  Usually you want to include a space at the end of *PREFIX*,
+as the timestamp follows immediately.
 
  **log-file**=*PATH*
-Log to this file instead of stdout. Sending lightningd(8) SIGHUP will
-cause it to reopen this file (useful for log rotation).
+Log to this file (instead of stdout).  If you specify this more than once
+you'll get more than one log file: **-** is used to mean stdout.  Sending
+lightningd(8) SIGHUP will cause it to reopen each file (useful for log
+rotation).
 
  **log-timestamps**=*BOOL*
 Set this to false to turn off timestamp prefixes (they will still appear
@@ -211,6 +216,17 @@ This will connect to a DB server running on `localhost` port `5432`,
 authenticate with username `user` and password `pass`, and then use the
 database `db_name`. The database must exist, but the schema will be managed
 automatically by `lightningd`.
+
+ **bookkeeper-dir**=*DIR* [plugin `bookkeeper`]
+Directory to keep the accounts.sqlite3 database file in.
+Defaults to lightning-dir.
+
+ **bookkeeper-db**=*DSN* [plugin `bookkeeper`]
+Identify the location of the bookkeeper data. This is a fully qualified data source
+name, including a scheme such as `sqlite3` or `postgres` followed by the
+connection parameters.
+Defaults to `sqlite3://accounts.sqlite3` in the `bookkeeper-dir`.
+
 
  **encrypted-hsm**
 If set, you will be prompted to enter a password used to encrypt the `hsm_secret`.
@@ -370,11 +386,13 @@ network.
 Note that for simple setups, the implicit *autolisten* option does the
 right thing: for the mainnet (bitcoin) network it will try to bind to
 port 9735 on IPv4 and IPv6, and will announce it to peers if it seems
-like a public address.
+like a public address (and other default ports for other networks,
+as described below).
 
 Core Lightning also support IPv4/6 address discovery behind NAT routers.
 If your node detects an new public address, it will update its announcement.
-For this to work you need to forward the TCP port 9735 to your node.
+For this to work you need to forward the default TCP port 9735 to your node.
+IP discovery is only active if no other addresses are announced.
 
 You can instead use *addr* to override this (eg. to change the port), or
 precisely control where to bind and what to announce with the
@@ -388,7 +406,9 @@ Set an IP address (v4 or v6) or automatic Tor address to listen on and
 
 An empty 'IPADDRESS' is a special value meaning bind to IPv4 and/or
 IPv6 on all interfaces, '0.0.0.0' means bind to all IPv4
-interfaces, '::' means 'bind to all IPv6 interfaces'.
+interfaces, '::' means 'bind to all IPv6 interfaces' (if you want to
+specify an IPv6 address *and* a port, use `[]` around the IPv6
+address, like `[::]:9750`).
 If 'PORT' is not specified, the default port 9735 is used for mainnet
 (testnet: 19735, signet: 39735, regtest: 19846).
 If we can determine a public IP address from the resulting binding,

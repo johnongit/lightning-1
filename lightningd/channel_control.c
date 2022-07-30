@@ -2,10 +2,9 @@
 #include <ccan/cast/cast.h>
 #include <channeld/channeld_wiregen.h>
 #include <common/json_command.h>
-#include <common/json_helpers.h>
-#include <common/json_tok.h>
+#include <common/json_param.h>
+#include <common/json_stream.h>
 #include <common/memleak.h>
-#include <common/param.h>
 #include <common/shutdown_scriptpubkey.h>
 #include <common/type_to_string.h>
 #include <common/wire_error.h>
@@ -128,15 +127,12 @@ void notify_feerate_change(struct lightningd *ld)
 	 * peer.  We *could* do so, however. */
 }
 
-void channel_record_open(struct channel *channel)
+void channel_record_open(struct channel *channel, u32 blockheight, bool record_push)
 {
 	struct chain_coin_mvt *mvt;
-	u32 blockheight;
 	struct amount_msat start_balance;
 	bool is_pushed = !amount_msat_zero(channel->push);
 	bool is_leased = channel->lease_expiry > 0;
-
-	blockheight = short_channel_id_blocknum(channel->scid);
 
 	/* If funds were pushed, add/sub them from the starting balance */
 	if (channel->opener == LOCAL) {
@@ -157,19 +153,31 @@ void channel_record_open(struct channel *channel)
 					     &channel->push));
 	}
 
-	mvt = new_coin_channel_open(tmpctx,
-				    &channel->cid,
-				    &channel->funding,
-				    blockheight,
-				    start_balance,
-				    channel->funding_sats,
-				    channel->opener == LOCAL,
-				    is_leased);
+	/* If it's not in a block yet, send a proposal */
+	if (blockheight > 0)
+		mvt = new_coin_channel_open(tmpctx,
+					    &channel->cid,
+					    &channel->funding,
+					    &channel->peer->id,
+					    blockheight,
+					    start_balance,
+					    channel->funding_sats,
+					    channel->opener == LOCAL,
+					    is_leased);
+	else
+		mvt = new_coin_channel_open_proposed(tmpctx,
+					    &channel->cid,
+					    &channel->funding,
+					    &channel->peer->id,
+					    start_balance,
+					    channel->funding_sats,
+					    channel->opener == LOCAL,
+					    is_leased);
 
 	notify_chain_mvt(channel->peer->ld, mvt);
 
 	/* If we pushed sats, *now* record them */
-	if (is_pushed)
+	if (is_pushed && record_push)
 		notify_channel_mvt(channel->peer->ld,
 				   new_coin_channel_push(tmpctx, &channel->cid,
 							 channel->push,
@@ -179,8 +187,13 @@ void channel_record_open(struct channel *channel)
 
 static void lockin_complete(struct channel *channel)
 {
-	/* We set this once we're locked in. */
-	assert(channel->scid);
+	if (!channel->scid &&
+	    (!channel->alias[REMOTE] || !channel->alias[LOCAL])) {
+		log_debug(channel->log, "Attempted lockin, but neither scid "
+					"nor aliases are set, ignoring");
+		return;
+	}
+
 	/* We set this once they're locked in. */
 	assert(channel->remote_funding_locked);
 
@@ -203,7 +216,13 @@ static void lockin_complete(struct channel *channel)
 
 	try_update_blockheight(channel->peer->ld, channel,
 			       get_block_height(channel->peer->ld->topology));
-	channel_record_open(channel);
+
+	/* Emit an event for the channel open (or channel proposal if blockheight
+	 * is zero) */
+	channel_record_open(channel,
+			    channel->scid ?
+			    short_channel_id_blocknum(channel->scid) : 0,
+			    true);
 }
 
 bool channel_on_funding_locked(struct channel *channel,
@@ -230,9 +249,10 @@ bool channel_on_funding_locked(struct channel *channel,
 static void peer_got_funding_locked(struct channel *channel, const u8 *msg)
 {
 	struct pubkey next_per_commitment_point;
+	struct short_channel_id *alias_remote;
 
-	if (!fromwire_channeld_got_funding_locked(msg,
-						 &next_per_commitment_point)) {
+	if (!fromwire_channeld_got_funding_locked(tmpctx,
+		msg, &next_per_commitment_point, &alias_remote)) {
 		channel_internal_error(channel,
 				       "bad channel_got_funding_locked %s",
 				       tal_hex(channel, msg));
@@ -242,11 +262,14 @@ static void peer_got_funding_locked(struct channel *channel, const u8 *msg)
 	if (!channel_on_funding_locked(channel, &next_per_commitment_point))
 		return;
 
-	if (channel->scid)
+	if (channel->alias[REMOTE] == NULL)
+		channel->alias[REMOTE] = tal_steal(channel, alias_remote);
+
+	/* Remember that we got the lockin */
+	wallet_channel_save(channel->peer->ld->wallet, channel);
+
+	if (channel->depth >= channel->minimum_depth)
 		lockin_complete(channel);
-	else
-		/* Remember that we got the lockin */
-		wallet_channel_save(channel->peer->ld->wallet, channel);
 }
 
 static void peer_got_announcement(struct channel *channel, const u8 *msg)
@@ -306,8 +329,9 @@ static void peer_got_shutdown(struct channel *channel, const u8 *msg)
 		subd_send_msg(ld->connectd,
 			      take(towire_connectd_peer_final_msg(NULL,
 								  &channel->peer->id,
+								  channel->peer->connectd_counter,
 								  warning)));
-		channel_fail_reconnect(channel, "Bad shutdown scriptpubkey %s",
+		channel_fail_transient(channel, "Bad shutdown scriptpubkey %s",
 				       tal_hex(tmpctx, scriptpubkey));
 		return;
 	}
@@ -584,7 +608,7 @@ static unsigned channel_msg(struct subd *sd, const u8 *msg, const int *fds)
 	return 0;
 }
 
-void peer_start_channeld(struct channel *channel,
+bool peer_start_channeld(struct channel *channel,
 			 struct peer_fd *peer_fd,
 			 const u8 *fwd_msg,
 			 bool reconnected,
@@ -626,9 +650,11 @@ void peer_start_channeld(struct channel *channel,
 	if (!channel->owner) {
 		log_broken(channel->log, "Could not subdaemon channel: %s",
 			   strerror(errno));
-		channel_fail_reconnect_later(channel,
-					     "Failed to subdaemon channel");
-		return;
+		/* Disconnect it. */
+		subd_send_msg(ld->connectd,
+			      take(towire_connectd_discard_peer(NULL, &channel->peer->id,
+								channel->peer->connectd_counter)));
+		return false;
 	}
 
 	htlcs = peer_htlcs(tmpctx, channel);
@@ -666,7 +692,7 @@ void peer_start_channeld(struct channel *channel,
 				       REASON_LOCAL,
 				       "Could not get revocation secret %"PRIu64,
 				       num_revocations-1);
-		return;
+		return false;
 	}
 
 	/* Warn once. */
@@ -680,7 +706,7 @@ void peer_start_channeld(struct channel *channel,
 		channel_internal_error(channel,
 				       "Could not load remote announcement"
 				       " signatures");
-		return;
+		return false;
 	}
 
 	pbases = wallet_penalty_base_load_for_channel(
@@ -695,7 +721,7 @@ void peer_start_channeld(struct channel *channel,
 		channel_internal_error(channel,
 				       "Could not derive final_ext_key %"PRIu64,
 				       channel->final_key_idx);
-		return;
+		return false;
 	}
 
 	initmsg = towire_channeld_init(tmpctx,
@@ -780,6 +806,12 @@ void peer_start_channeld(struct channel *channel,
 		try_update_blockheight(ld, channel,
 				       get_block_height(ld->topology));
 	}
+
+	/* Artificial confirmation event for zeroconf */
+	subd_send_msg(channel->owner,
+		      take(towire_channeld_funding_depth(
+			  NULL, channel->scid, channel->alias[LOCAL], 0)));
+	return true;
 }
 
 bool channel_tell_depth(struct lightningd *ld,
@@ -790,6 +822,7 @@ bool channel_tell_depth(struct lightningd *ld,
 	const char *txidstr;
 
 	txidstr = type_to_string(tmpctx, struct bitcoin_txid, txid);
+	channel->depth = depth;
 
 	if (!channel->owner) {
 		log_debug(channel->log,
@@ -823,14 +856,35 @@ bool channel_tell_depth(struct lightningd *ld,
 	}
 
 	subd_send_msg(channel->owner,
-		      take(towire_channeld_funding_depth(NULL, channel->scid,
-							 depth)));
+		      take(towire_channeld_funding_depth(
+			  NULL, channel->scid, channel->alias[LOCAL], depth)));
 
-	if (channel->remote_funding_locked
-	    && channel->state == CHANNELD_AWAITING_LOCKIN
-	    && depth >= channel->minimum_depth)
+	if (channel->remote_funding_locked &&
+		 channel->state == CHANNELD_AWAITING_LOCKIN &&
+		 depth >= channel->minimum_depth)
 		lockin_complete(channel);
 
+	else if (depth == 1 && channel->minimum_depth == 0) {
+		/* If we have a zeroconf channel, i.e., no scid yet
+		 * but have exchange `channel_ready` messages, then we
+		 * need to fire a second time, in order to trigger the
+		 * `coin_movement` event. This is a subset of the
+		 * `lockin_complete` function below. */
+
+		assert(channel->scid != NULL);
+		/* Fees might have changed (and we use IMMEDIATE once we're
+		 * funded), so update now. */
+		try_update_feerates(channel->peer->ld, channel);
+
+		try_update_blockheight(
+		    channel->peer->ld, channel,
+		    get_block_height(channel->peer->ld->topology));
+
+		/* Emit channel_open event */
+		channel_record_open(channel,
+				    short_channel_id_blocknum(channel->scid),
+				    false);
+	}
 	return true;
 }
 

@@ -14,6 +14,7 @@ import shutil
 import string
 import sys
 import tempfile
+import time
 
 
 # A dict in which we count how often a particular test has run so far. Used to
@@ -94,10 +95,14 @@ def directory(request, test_base_dir, test_name):
     if not failed:
         try:
             shutil.rmtree(directory)
-        except (OSError, Exception):
+        except OSError:
+            # Usually, this means that e.g. valgrind is still running.  Wait
+            # a little and retry.
             files = [os.path.join(dp, f) for dp, dn, fn in os.walk(directory) for f in fn]
-            print("Directory still contains files:", files)
-            raise
+            print("Directory still contains files: ", files)
+            print("... sleeping then retrying")
+            time.sleep(10)
+            shutil.rmtree(directory)
     else:
         logging.debug("Test execution failed, leaving the test directory {} intact.".format(directory))
 
@@ -356,7 +361,7 @@ def _extra_validator(is_request: bool):
             return False
 
     def is_msat_response(checker, instance):
-        """String number ending in msat"""
+        """String number ending in msat (deprecated) or integer"""
         return type(instance) is Millisatoshi
 
     def is_txid(checker, instance):
@@ -490,6 +495,28 @@ def node_factory(request, directory, test_name, bitcoind, executor, db_provider,
     map_node_error(nf.nodes, lambda n: n.daemon.is_in_log(r'Accessing a null column'), "Accessing a null column")
     map_node_error(nf.nodes, checkMemleak, "had memleak messages")
     map_node_error(nf.nodes, lambda n: n.rc != 0 and not n.may_fail, "Node exited with return code {n.rc}")
+    if not ok:
+        map_node_error(nf.nodes, prinErrlog, "some node failed unexpected, non-empty errlog file")
+
+
+def getErrlog(node):
+    for error_file in os.listdir(node.daemon.lightning_dir):
+        if not re.fullmatch(r"errlog", error_file):
+            continue
+        with open(os.path.join(node.daemon.lightning_dir, error_file), 'r') as f:
+            errors = f.read().strip()
+            if errors:
+                return errors, error_file
+    return None, None
+
+
+def prinErrlog(node):
+    errors, fname = getErrlog(node)
+    if errors:
+        print("-" * 31, "stderr of node {} captured in {} file".format(node.daemon.prefix, fname), "-" * 32)
+        print(errors)
+        print("-" * 80)
+    return 1 if errors else 0
 
 
 def getValgrindErrors(node):

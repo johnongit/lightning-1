@@ -1,6 +1,5 @@
 from fixtures import *  # noqa: F401,F403
 from fixtures import TEST_NETWORK
-from flaky import flaky  # noqa: F401
 from ephemeral_port_reserve import reserve  # type: ignore
 from pyln.client import RpcError, Millisatoshi
 import pyln.proto.wire as wire
@@ -9,8 +8,8 @@ from utils import (
     expected_peer_features, expected_node_features,
     expected_channel_features,
     check_coin_moves, first_channel_id, account_balance, basic_fee,
-    scriptpubkey_addr,
-    DEVELOPER, EXPERIMENTAL_FEATURES, mine_funding_to_announce
+    scriptpubkey_addr, default_ln_port,
+    EXPERIMENTAL_FEATURES, mine_funding_to_announce
 )
 from pyln.testing.utils import SLOW_MACHINE, VALGRIND, EXPERIMENTAL_DUAL_FUND, FUNDAMOUNT
 
@@ -46,9 +45,6 @@ def test_connect_basic(node_factory):
     assert len(l1.rpc.listpeers()) == 1
     assert len(l2.rpc.listpeers()) == 1
 
-    if DEVELOPER:
-        print(l1.daemon.wait_for_log("Peer says it sees our address as: 127.0.0.1:[0-9]{5}"))
-
     # Should get reasonable error if unknown addr for peer.
     with pytest.raises(RpcError, match=r'Unable to connect, no address known'):
         l1.rpc.connect('032cf15d1ad9c4a08d26eab1918f732d8ef8fdc6abb9640bf3db174372c491304e')
@@ -62,7 +58,7 @@ def test_connect_basic(node_factory):
         l1.rpc.connect('032cf15d1ad9c4a08d26eab1918f732d8ef8fdc6abb9640bf3db174372c491304e', 'localhost', l2.port)
 
 
-@pytest.mark.developer("needs DEVELOPER=1 for having localhost remote_addr and fast gossip")
+@pytest.mark.developer("needs DEVELOPER=1 for fast gossip and --dev-allow-localhost for local remote_addr")
 def test_remote_addr(node_factory, bitcoind):
     """Check address discovery (BOLT1 #917) init remote_addr works as designed:
 
@@ -70,31 +66,50 @@ def test_remote_addr(node_factory, bitcoind):
         - at least two peers
         - we have a channel with
         - report the same `remote_addr`
+
+        We perform logic tests on L2, setup:
+         l1 --> [l2] <-- l3
     """
     # don't announce anything per se
-    opts = {'announce-addr': [], 'may_reconnect': True}
-    l1, l2, l3 = node_factory.get_nodes(3, opts=opts)
+    opts = {'may_reconnect': True,
+            'dev-allow-localhost': None,
+            'dev-no-reconnect': None}
+    l1, l2, l3 = node_factory.get_nodes(3, opts)
+
+    # Disable announcing local autobind addresses with dev-allow-localhost.
+    # We need to have l2 opts 'bind-addr' to the (generated) value of 'addr'.
+    # So we stop, set 'bind-addr' option, delete 'addr' and restart first.
+    l2.stop()
+    l2.daemon.opts['bind-addr'] = l2.daemon.opts['addr']
+    del l2.daemon.opts['addr']
+    l2.start()
+
     l2.rpc.connect(l1.info['id'], 'localhost', l1.port)
-    l2.daemon.wait_for_log("Peer says it sees our address as: 127.0.0.1:[0-9]{5}")
+    logmsg = l2.daemon.wait_for_log("Peer says it sees our address as: 127.0.0.1:[0-9]{5}")
+    # check 'listpeers' contains the 'remote_addr' as logged
+    assert logmsg.endswith(l2.rpc.listpeers()['peers'][0]['remote_addr'])
 
     # Fund first channel so initial node_announcement is send
+    # and also check no addresses have been announced yet
     l1.fundchannel(l2)
     bitcoind.generate_block(5)
     l1.daemon.wait_for_log(f"Received node_announcement for node {l2.info['id']}")
+    assert(len(l1.rpc.listnodes(l2.info['id'])['nodes'][0]['addresses']) == 0)
+
+    def_port = default_ln_port(l2.info["network"])
 
     # when we restart l1 with a channel and reconnect, node_annoucement update
     # must not yet be send as we need the same `remote_addr` confirmed from a
     # another peer we have a channel with.
     # Note: In this state l2 stores remote_addr as reported by l1
-    assert not l2.daemon.is_in_log("Update our node_announcement for discovered address: 127.0.0.1:9735")
+    assert not l2.daemon.is_in_log("Update our node_announcement for discovered address: 127.0.0.1:{}".format(def_port))
     l1.restart()
     l2.rpc.connect(l1.info['id'], 'localhost', l1.port)
     l2.daemon.wait_for_log("Peer says it sees our address as: 127.0.0.1:[0-9]{5}")
 
-    # now only l1 sees l2 without announced addresses (disabled by opts)
+    # Now l1 sees l2 but without announced addresses.
     assert(len(l1.rpc.listnodes(l2.info['id'])['nodes'][0]['addresses']) == 0)
-    assert(len(l3.rpc.listnodes(l2.info['id'])['nodes']) == 0)
-    assert not l2.daemon.is_in_log("Update our node_announcement for discovered address: 127.0.0.1:9735")
+    assert not l2.daemon.is_in_log("Update our node_announcement for discovered address: 127.0.0.1:{}".format(def_port))
 
     # connect second node. This will not yet trigger `node_annoucement` update,
     # as we again do not have a channel at the time we connected.
@@ -104,28 +119,34 @@ def test_remote_addr(node_factory, bitcoind):
     # fund channel and check we didn't send Update earlier already
     l2.fundchannel(l3, wait_for_active=True)
     bitcoind.generate_block(5)
-    assert not l2.daemon.is_in_log("Update our node_announcement for discovered address: 127.0.0.1:9735")
+    assert not l2.daemon.is_in_log("Update our node_announcement for discovered address: 127.0.0.1:{}".format(def_port))
 
     # restart, reconnect and re-check for updated node_annoucement. This time
     # l2 sees that two different peers with channel reported the same `remote_addr`.
     l3.restart()
     l2.rpc.connect(l3.info['id'], 'localhost', l3.port)
     l2.daemon.wait_for_log("Peer says it sees our address as: 127.0.0.1:[0-9]{5}")
-    l2.daemon.wait_for_log("Update our node_announcement for discovered address: 127.0.0.1:9735")
+    l2.daemon.wait_for_log("Update our node_announcement for discovered address: 127.0.0.1:{}".format(def_port))
     l1.daemon.wait_for_log(f"Received node_announcement for node {l2.info['id']}")
 
     address = l1.rpc.listnodes(l2.info['id'])['nodes'][0]['addresses'][0]
     assert address['type'] == "ipv4"
     assert address['address'] == "127.0.0.1"
-    assert address['port'] == 9735
+    assert address['port'] == def_port
 
 
-@pytest.mark.developer("needs DEVELOPER=1 for having localhost remote_addr and fast gossip")
+@pytest.mark.developer("needs DEVELOPER=1 for fast gossip and --dev-allow-localhost for local remote_addr")
 def test_remote_addr_disabled(node_factory, bitcoind):
     """Simply tests that IP address discovery annoucements can be turned off
+
+       We perform logic tests on L2, setup:
+        l1 --> [l2] <-- l3
     """
-    opts = {'announce-addr': [], 'disable-ip-discovery': None, 'may_reconnect': True}
-    l1, l2, l3 = node_factory.get_nodes(3, opts=opts)
+    opts = {'dev-allow-localhost': None,
+            'disable-ip-discovery': None,
+            'may_reconnect': True,
+            'dev-no-reconnect': None}
+    l1, l2, l3 = node_factory.get_nodes(3, opts=[opts, opts, opts])
 
     # l1->l2
     l2.rpc.connect(l1.info['id'], 'localhost', l1.port)
@@ -237,10 +258,10 @@ def test_balance(node_factory):
     l1, l2 = node_factory.line_graph(2, fundchannel=True)
     p1 = only_one(l1.rpc.getpeer(peer_id=l2.info['id'], level='info')['channels'])
     p2 = only_one(l2.rpc.getpeer(l1.info['id'], 'info')['channels'])
-    assert p1['msatoshi_to_us'] == 10**6 * 1000
-    assert p1['msatoshi_total'] == 10**6 * 1000
-    assert p2['msatoshi_to_us'] == 0
-    assert p2['msatoshi_total'] == 10**6 * 1000
+    assert p1['to_us_msat'] == 10**6 * 1000
+    assert p1['total_msat'] == 10**6 * 1000
+    assert p2['to_us_msat'] == 0
+    assert p2['total_msat'] == 10**6 * 1000
 
 
 @pytest.mark.openchannel('v1')
@@ -263,7 +284,7 @@ def test_bad_opening(node_factory):
     l2.daemon.wait_for_log('to_self_delay 100 larger than 99')
 
 
-@pytest.mark.developer("gossip without DEVELOPER=1 is slow")
+@pytest.mark.developer("gossip without DEVELOPER=1 is slow, need dev-no-reconnect")
 @unittest.skipIf(TEST_NETWORK != 'regtest', "Fee computation and limits are network specific")
 @pytest.mark.slow_test
 @pytest.mark.openchannel('v1')
@@ -298,10 +319,10 @@ def test_opening_tiny_channel(node_factory):
     l3_min_capacity = 10000           # the current default
     l4_min_capacity = 20000           # a server with more than default minimum
 
-    opts = [{'min-capacity-sat': 0},
-            {'min-capacity-sat': l2_min_capacity},
-            {'min-capacity-sat': l3_min_capacity},
-            {'min-capacity-sat': l4_min_capacity}]
+    opts = [{'min-capacity-sat': 0, 'dev-no-reconnect': None},
+            {'min-capacity-sat': l2_min_capacity, 'dev-no-reconnect': None},
+            {'min-capacity-sat': l3_min_capacity, 'dev-no-reconnect': None},
+            {'min-capacity-sat': l4_min_capacity, 'dev-no-reconnect': None}]
     l1, l2, l3, l4 = node_factory.get_nodes(4, opts=opts)
     l1.rpc.connect(l2.info['id'], 'localhost', l2.port)
     l1.rpc.connect(l3.info['id'], 'localhost', l3.port)
@@ -309,16 +330,19 @@ def test_opening_tiny_channel(node_factory):
 
     with pytest.raises(RpcError, match=r'They sent [error|warning].*channel capacity is .*, which is below .*sat'):
         l1.fundchannel(l2, l2_min_capacity + overhead - 1)
+    wait_for(lambda: l1.rpc.listpeers(l2.info['id'])['peers'] == [])
     l1.rpc.connect(l2.info['id'], 'localhost', l2.port)
     l1.fundchannel(l2, l2_min_capacity + overhead)
 
     with pytest.raises(RpcError, match=r'They sent [error|warning].*channel capacity is .*, which is below .*sat'):
         l1.fundchannel(l3, l3_min_capacity + overhead - 1)
+    wait_for(lambda: l1.rpc.listpeers(l3.info['id'])['peers'] == [])
     l1.rpc.connect(l3.info['id'], 'localhost', l3.port)
     l1.fundchannel(l3, l3_min_capacity + overhead)
 
     with pytest.raises(RpcError, match=r'They sent [error|warning].*channel capacity is .*, which is below .*sat'):
         l1.fundchannel(l4, l4_min_capacity + overhead - 1)
+    wait_for(lambda: l1.rpc.listpeers(l4.info['id'])['peers'] == [])
     l1.rpc.connect(l4.info['id'], 'localhost', l4.port)
     l1.fundchannel(l4, l4_min_capacity + overhead)
 
@@ -327,6 +351,7 @@ def test_opening_tiny_channel(node_factory):
     l3.rpc.connect(l2.info['id'], 'localhost', l2.port)
     with pytest.raises(RpcError, match=r"channel capacity is .*, which is below .*sat"):
         l3.fundchannel(l2, l3_min_capacity + overhead - 1)
+    wait_for(lambda: l3.rpc.listpeers(l2.info['id'])['peers'] == [])
     l3.rpc.connect(l2.info['id'], 'localhost', l2.port)
     l3.fundchannel(l2, l3_min_capacity + overhead)
 
@@ -426,7 +451,8 @@ def test_disconnect_opener(node_factory):
         l1.rpc.connect(l2.info['id'], 'localhost', l2.port)
         with pytest.raises(RpcError):
             l1.rpc.fundchannel(l2.info['id'], 25000)
-        assert l1.rpc.getpeer(l2.info['id']) is None
+        # First peer valishes, but later it just disconnects
+        wait_for(lambda: all([p['connected'] is False for p in l1.rpc.listpeers()['peers']]))
 
     # This one will succeed.
     l1.rpc.connect(l2.info['id'], 'localhost', l2.port)
@@ -470,7 +496,8 @@ def test_disconnect_fundee(node_factory):
         l1.rpc.connect(l2.info['id'], 'localhost', l2.port)
         with pytest.raises(RpcError):
             l1.rpc.fundchannel(l2.info['id'], 25000)
-        assert l1.rpc.getpeer(l2.info['id']) is None
+        # First peer valishes, but later it just disconnects
+        wait_for(lambda: all([p['connected'] is False for p in l1.rpc.listpeers()['peers']]))
 
     # This one will succeed.
     l1.rpc.connect(l2.info['id'], 'localhost', l2.port)
@@ -516,8 +543,8 @@ def test_disconnect_fundee_v2(node_factory):
     l1.rpc.fundchannel(l2.info['id'], 25000)
 
     # Should still only have one peer!
-    assert len(l1.rpc.listpeers()) == 1
-    assert len(l2.rpc.listpeers()) == 1
+    assert len(l1.rpc.listpeers()['peers']) == 1
+    assert len(l2.rpc.listpeers()['peers']) == 1
 
 
 @pytest.mark.developer
@@ -539,8 +566,8 @@ def test_disconnect_half_signed(node_factory):
         l1.rpc.fundchannel(l2.info['id'], 25000)
 
     # Peer remembers, opener doesn't.
-    assert l1.rpc.getpeer(l2.info['id']) is None
-    assert l2.rpc.getpeer(l1.info['id'])['id'] == l1.info['id']
+    wait_for(lambda: l1.rpc.listpeers(l2.info['id'])['peers'] == [])
+    assert len(only_one(l2.rpc.listpeers(l1.info['id'])['peers'])['channels']) == 1
 
 
 @pytest.mark.developer
@@ -638,7 +665,6 @@ def test_reconnect_gossiping(node_factory):
     l2.daemon.wait_for_log('processing now old peer gone')
 
 
-@flaky
 @pytest.mark.developer("needs dev-disconnect")
 @pytest.mark.openchannel('v1')
 @pytest.mark.openchannel('v2')
@@ -723,7 +749,7 @@ def test_reconnect_sender_add1(node_factory):
     rhash = inv['payment_hash']
     assert only_one(l2.rpc.listinvoices('test_reconnect_sender_add1')['invoices'])['status'] == 'unpaid'
 
-    route = [{'msatoshi': amt, 'id': l2.info['id'], 'delay': 5, 'channel': '1x1x1'}]
+    route = [{'amount_msat': amt, 'id': l2.info['id'], 'delay': 5, 'channel': '1x1x1'}]
 
     for i in range(0, len(disconnects)):
         with pytest.raises(RpcError):
@@ -762,7 +788,7 @@ def test_reconnect_sender_add(node_factory):
     rhash = inv['payment_hash']
     assert only_one(l2.rpc.listinvoices('testpayment')['invoices'])['status'] == 'unpaid'
 
-    route = [{'msatoshi': amt, 'id': l2.info['id'], 'delay': 5, 'channel': '1x1x1'}]
+    route = [{'amount_msat': amt, 'id': l2.info['id'], 'delay': 5, 'channel': '1x1x1'}]
 
     # This will send commit, so will reconnect as required.
     l1.rpc.sendpay(route, rhash, payment_secret=inv['payment_secret'])
@@ -796,7 +822,7 @@ def test_reconnect_receiver_add(node_factory):
     rhash = inv['payment_hash']
     assert only_one(l2.rpc.listinvoices('testpayment2')['invoices'])['status'] == 'unpaid'
 
-    route = [{'msatoshi': amt, 'id': l2.info['id'], 'delay': 5, 'channel': '1x1x1'}]
+    route = [{'amount_msat': amt, 'id': l2.info['id'], 'delay': 5, 'channel': '1x1x1'}]
     l1.rpc.sendpay(route, rhash, payment_secret=inv['payment_secret'])
     for i in range(len(disconnects)):
         l1.daemon.wait_for_log('Already have funding locked in')
@@ -826,14 +852,13 @@ def test_reconnect_receiver_fulfill(node_factory):
     rhash = inv['payment_hash']
     assert only_one(l2.rpc.listinvoices('testpayment2')['invoices'])['status'] == 'unpaid'
 
-    route = [{'msatoshi': amt, 'id': l2.info['id'], 'delay': 5, 'channel': '1x1x1'}]
+    route = [{'amount_msat': amt, 'id': l2.info['id'], 'delay': 5, 'channel': '1x1x1'}]
     l1.rpc.sendpay(route, rhash, payment_secret=inv['payment_secret'])
     for i in range(len(disconnects)):
         l1.daemon.wait_for_log('Already have funding locked in')
     assert only_one(l2.rpc.listinvoices('testpayment2')['invoices'])['status'] == 'paid'
 
 
-@flaky
 @pytest.mark.developer
 @pytest.mark.openchannel('v1')
 @pytest.mark.openchannel('v2')
@@ -866,7 +891,6 @@ def test_shutdown_reconnect(node_factory):
     assert l1.bitcoin.rpc.getmempoolinfo()['size'] == 1
 
 
-@flaky
 @pytest.mark.developer
 def test_reconnect_remote_sends_no_sigs(node_factory):
     """We re-announce, even when remote node doesn't send its announcement_signatures on reconnect.
@@ -910,8 +934,7 @@ def test_shutdown_awaiting_lockin(node_factory, bitcoind):
     chanid = l1.rpc.fundchannel(l2.info['id'], 10**6)['channel_id']
 
     # Technically, this is async to fundchannel.
-    l1.daemon.wait_for_log('sendrawtx exit 0')
-    bitcoind.generate_block(1)
+    bitcoind.generate_block(1, wait_for_mempool=1)
 
     l1.rpc.close(chanid)
 
@@ -927,15 +950,16 @@ def test_shutdown_awaiting_lockin(node_factory, bitcoind):
     # CLOSINGD_COMPLETE may come first).
     l1.daemon.wait_for_logs(['sendrawtx exit 0', ' to CLOSINGD_COMPLETE'])
     l2.daemon.wait_for_logs(['sendrawtx exit 0', ' to CLOSINGD_COMPLETE'])
-    assert bitcoind.rpc.getmempoolinfo()['size'] == 1
 
-    bitcoind.generate_block(1)
+    bitcoind.generate_block(1, wait_for_mempool=1)
     l1.daemon.wait_for_log(' to ONCHAIN')
     l2.daemon.wait_for_log(' to ONCHAIN')
 
     bitcoind.generate_block(100)
-    wait_for(lambda: l1.rpc.listpeers()['peers'] == [])
-    wait_for(lambda: l2.rpc.listpeers()['peers'] == [])
+
+    # Won't disconnect!
+    wait_for(lambda: only_one(l1.rpc.listpeers()['peers'])['channels'] == [])
+    wait_for(lambda: only_one(l2.rpc.listpeers()['peers'])['channels'] == [])
 
 
 @pytest.mark.openchannel('v1')
@@ -1004,7 +1028,7 @@ def test_funding_all_too_much(node_factory):
     pending = only_one([o for o in outputs if o['status'] != 'confirmed'])
     assert pending['status'] == 'unconfirmed'
     assert pending['reserved'] is False
-    assert only_one(l1.rpc.listfunds()['channels'])['channel_total_sat'] == 2**24 - 1
+    assert only_one(l1.rpc.listfunds()['channels'])['amount_msat'] == Millisatoshi(str(2**24 - 1) + "sat")
 
 
 @pytest.mark.openchannel('v1')
@@ -1115,7 +1139,7 @@ def test_funding_push(node_factory, bitcoind, chainparams):
 
     # Send funds.
     amount = 2**24
-    push_sat = 20000
+    push_msat = 20000 * 1000
     bitcoind.rpc.sendtoaddress(l1.rpc.newaddr()['bech32'], amount / 10**8 + 0.01)
     bitcoind.generate_block(1)
 
@@ -1124,30 +1148,30 @@ def test_funding_push(node_factory, bitcoind, chainparams):
 
     # Fail to open (try to push too much)
     with pytest.raises(RpcError, match=r'Requested to push_msat of 20000000msat is greater than available funding amount 10000sat'):
-        l1.rpc.fundchannel(l2.info['id'], 10000, push_msat=push_sat * 1000)
+        l1.rpc.fundchannel(l2.info['id'], 10000, push_msat=push_msat)
 
     # This should work.
     amount = amount - 1
-    l1.rpc.fundchannel(l2.info['id'], amount, push_msat=push_sat * 1000)
+    l1.rpc.fundchannel(l2.info['id'], amount, push_msat=push_msat)
 
     bitcoind.generate_block(1)
     sync_blockheight(bitcoind, [l1])
     funds = only_one(l1.rpc.listfunds()['channels'])
-    assert funds['channel_sat'] + push_sat == funds['channel_total_sat']
+    assert funds['our_amount_msat'] + push_msat == funds['amount_msat']
 
     chanid = first_channel_id(l2, l1)
     channel_mvts_1 = [
-        {'type': 'chain_mvt', 'credit': 16777215000, 'debit': 0, 'tags': ['channel_open', 'opener']},
-        {'type': 'channel_mvt', 'credit': 0, 'debit': 20000000, 'tags': ['pushed'], 'fees': '0msat'},
+        {'type': 'chain_mvt', 'credit_msat': 16777215000, 'debit_msat': 0, 'tags': ['channel_open', 'opener']},
+        {'type': 'channel_mvt', 'credit_msat': 0, 'debit_msat': 20000000, 'tags': ['pushed'], 'fees_msat': '0msat'},
     ]
     channel_mvts_2 = [
-        {'type': 'chain_mvt', 'credit': 0, 'debit': 0, 'tags': ['channel_open']},
-        {'type': 'channel_mvt', 'credit': 20000000, 'debit': 0, 'tags': ['pushed'], 'fees': '0msat'},
+        {'type': 'chain_mvt', 'credit_msat': 0, 'debit_msat': 0, 'tags': ['channel_open']},
+        {'type': 'channel_mvt', 'credit_msat': 20000000, 'debit_msat': 0, 'tags': ['pushed'], 'fees_msat': '0msat'},
     ]
     check_coin_moves(l1, chanid, channel_mvts_1, chainparams)
     check_coin_moves(l2, chanid, channel_mvts_2, chainparams)
 
-    assert account_balance(l1, chanid) == (amount - push_sat) * 1000
+    assert account_balance(l1, chanid) == amount * 1000 - push_msat
 
 
 @pytest.mark.openchannel('v1')
@@ -1195,8 +1219,8 @@ def test_funding_by_utxos(node_factory, bitcoind):
 @pytest.mark.developer("needs dev_forget_channel")
 @pytest.mark.openchannel('v1')
 def test_funding_external_wallet_corners(node_factory, bitcoind):
-    l1 = node_factory.get_node(may_reconnect=True)
-    l2 = node_factory.get_node(may_reconnect=True)
+    l1, l2 = node_factory.get_nodes(2, opts={'may_reconnect': True,
+                                             'dev-no-reconnect': None})
 
     amount = 2**24
     l1.fundwallet(amount + 10000000)
@@ -1247,6 +1271,7 @@ def test_funding_external_wallet_corners(node_factory, bitcoind):
     l1.rpc.fundchannel_cancel(l2.info['id'])
 
     # Cancelling causes disconnection.
+    wait_for(lambda: l1.rpc.listpeers(l2.info['id'])['peers'] == [])
     l1.rpc.connect(l2.info['id'], 'localhost', l2.port)
     amount2 = 1000000
     funding_addr = l1.rpc.fundchannel_start(l2.info['id'], amount2)['funding_address']
@@ -1268,6 +1293,7 @@ def test_funding_external_wallet_corners(node_factory, bitcoind):
     # But must unreserve inputs manually.
     l1.rpc.txdiscard(prep['txid'])
 
+    wait_for(lambda: l1.rpc.listpeers(l2.info['id'])['peers'] == [])
     l1.rpc.connect(l2.info['id'], 'localhost', l2.port)
     funding_addr = l1.rpc.fundchannel_start(l2.info['id'], amount)['funding_address']
     prep = l1.rpc.txprepare([{funding_addr: amount}])
@@ -1284,10 +1310,6 @@ def test_funding_external_wallet_corners(node_factory, bitcoind):
     assert l1.rpc.fundchannel_cancel(l2.info['id'])['cancelled']
     assert len(l1.rpc.listpeers()['peers']) == 0
 
-    # l2 still has the channel open/waiting
-    wait_for(lambda: only_one(only_one(l2.rpc.listpeers()['peers'])['channels'])['state']
-             == 'CHANNELD_AWAITING_LOCKIN')
-
     # on reconnect, channel should get destroyed
     l1.rpc.connect(l2.info['id'], 'localhost', l2.port)
     l1.daemon.wait_for_log('Unknown channel .* for WIRE_CHANNEL_REESTABLISH')
@@ -1298,6 +1320,7 @@ def test_funding_external_wallet_corners(node_factory, bitcoind):
     l1.rpc.txdiscard(prep['txid'])
 
     # we have to connect again, because we got disconnected when everything errored
+    wait_for(lambda: l1.rpc.listpeers(l2.info['id'])['peers'] == [])
     l1.rpc.connect(l2.info['id'], 'localhost', l2.port)
     funding_addr = l1.rpc.fundchannel_start(l2.info['id'], amount)['funding_address']
     prep = l1.rpc.txprepare([{funding_addr: amount}])
@@ -1366,6 +1389,10 @@ def test_funding_v2_corners(node_factory, bitcoind):
 
     # Disconnect peer.
     l1.rpc.disconnect(l2.info['id'], force=True)
+    # FIXME: dualopend doesn't notice that connectd has closed peer conn
+    # (until we reconnect!)
+    l1.rpc.connect(l2.info['id'], 'localhost', l2.port)
+    l1.rpc.disconnect(l2.info['id'])
     wait_for(lambda: len(l1.rpc.listpeers()['peers']) == 0)
 
     with pytest.raises(RpcError, match=r'Unknown channel'):
@@ -1576,7 +1603,7 @@ def test_funding_close_upfront(node_factory, bitcoind):
 
         for node in [l1, l2]:
             channel = node.rpc.listpeers()['peers'][0]['channels'][-1]
-            assert amount * 1000 == channel['msatoshi_total']
+            assert amount * 1000 == channel['total_msat']
 
     def _close(src, dst, addr=None):
         """Close the channel from src to dst, with the specified address.
@@ -1674,7 +1701,7 @@ def test_funding_external_wallet(node_factory, bitcoind):
     for node in [l1, l2]:
         node.daemon.wait_for_log(r'State changed from CHANNELD_AWAITING_LOCKIN to CHANNELD_NORMAL')
         channel = node.rpc.listpeers()['peers'][0]['channels'][0]
-        assert amount * 1000 == channel['msatoshi_total']
+        assert amount * 1000 == channel['total_msat']
 
     # Test that we don't crash if peer disconnects after fundchannel_start
     l2.connect(l3)
@@ -1873,9 +1900,10 @@ def test_multifunding_disconnect(node_factory):
     disconnects = ["-WIRE_INIT",
                    "-WIRE_ACCEPT_CHANNEL",
                    "+WIRE_ACCEPT_CHANNEL"]
-    l1 = node_factory.get_node()
-    l2 = node_factory.get_node(disconnect=disconnects)
-    l3 = node_factory.get_node()
+    l1, l2, l3 = node_factory.get_nodes(3, opts=[{'dev-no-reconnect': None},
+                                                 {'dev-no-reconnect': None,
+                                                  'disconnect': disconnects},
+                                                 {'dev-no-reconnect': None}])
 
     l1.fundwallet(2000000)
 
@@ -1889,6 +1917,7 @@ def test_multifunding_disconnect(node_factory):
     for d in disconnects:
         with pytest.raises(RpcError):
             l1.rpc.multifundchannel(destinations)
+        wait_for(lambda: l1.rpc.listpeers(l2.info['id'])['peers'] == [])
 
     # TODO: failing at the fundchannel_complete phase
     # (-WIRE_FUNDING_SIGNED +-WIRE_FUNDING_SIGNED)
@@ -1928,6 +1957,9 @@ def test_multifunding_wumbo(node_factory):
     with pytest.raises(RpcError, match='Amount exceeded'):
         l1.rpc.multifundchannel(destinations)
 
+    # Make sure it's disconnected from l2 before retrying.
+    wait_for(lambda: l1.rpc.listpeers(l2.info['id'])['peers'] == [])
+
     # This should succeed.
     destinations = [{"id": '{}@localhost:{}'.format(l2.info['id'], l2.port),
                      "amount": 1 << 24},
@@ -1962,6 +1994,9 @@ def test_multifunding_feerates(node_factory, bitcoind):
     entry = bitcoind.rpc.getmempoolentry(res['txid'])
     weight = entry['weight']
 
+    # If signature is unexpectedly short, we get a spurious failure here!
+    res = bitcoind.rpc.decoderawtransaction(res['tx'])
+    weight += 71 - len(res['vin'][0]['txinwitness'][0]) // 2
     expected_fee = int(funding_tx_feerate[:-5]) * weight // 1000
     assert expected_fee == entry['fees']['base'] * 10 ** 8
 
@@ -2166,6 +2201,8 @@ def test_funding_while_offline(node_factory, bitcoind):
 @pytest.mark.developer
 @pytest.mark.openchannel('v1')
 @pytest.mark.openchannel('v2')
+@unittest.skipIf(os.environ.get("TEST_CHECK_DBSTMTS", None) == "1",
+                 "We kill l2, dblog plugin replay will be unreliable")
 def test_channel_persistence(node_factory, bitcoind, executor):
     # Start two nodes and open a channel (to remember). l2 will
     # mysteriously die while committing the first HTLC so we can
@@ -2215,7 +2252,7 @@ def test_channel_persistence(node_factory, bitcoind, executor):
     wait_for(lambda: len(l2.rpc.listpeers()['peers']) == 1)
 
     # Wait for the restored HTLC to finish
-    wait_for(lambda: only_one(l1.rpc.listpeers()['peers'][0]['channels'])['msatoshi_to_us'] == 99990000)
+    wait_for(lambda: only_one(l1.rpc.listpeers()['peers'][0]['channels'])['to_us_msat'] == 99990000)
 
     wait_for(lambda: len([p for p in l1.rpc.listpeers()['peers'] if p['connected']]))
     wait_for(lambda: len([p for p in l2.rpc.listpeers()['peers'] if p['connected']]))
@@ -2223,14 +2260,20 @@ def test_channel_persistence(node_factory, bitcoind, executor):
     # Now make sure this is really functional by sending a payment
     l1.pay(l2, 10000)
 
-    # L1 doesn't actually update msatoshi_to_us until it receives
+    # L1 doesn't actually update to_us_msat until it receives
     # revoke_and_ack from L2, which can take a little bit.
-    wait_for(lambda: only_one(l1.rpc.listpeers()['peers'][0]['channels'])['msatoshi_to_us'] == 99980000)
-    assert only_one(l2.rpc.listpeers()['peers'][0]['channels'])['msatoshi_to_us'] == 20000
+    wait_for(lambda: only_one(l1.rpc.listpeers()['peers'][0]['channels'])['to_us_msat'] == 99980000)
+    assert only_one(l2.rpc.listpeers()['peers'][0]['channels'])['to_us_msat'] == 20000
 
     # Finally restart l1, and make sure it remembers
     l1.restart()
-    assert only_one(l1.rpc.listpeers()['peers'][0]['channels'])['msatoshi_to_us'] == 99980000
+    assert only_one(l1.rpc.listpeers()['peers'][0]['channels'])['to_us_msat'] == 99980000
+
+    # Keep l1 from sending its onchain tx
+    def censoring_sendrawtx(r):
+        return {'id': r['id'], 'result': {}}
+
+    l1.daemon.rpcproxy.mock_rpc('sendrawtransaction', censoring_sendrawtx)
 
     # Now make sure l1 is watching for unilateral closes
     l2.rpc.dev_fail(l1.info['id'])
@@ -2501,13 +2544,10 @@ def test_multiple_channels(node_factory):
     l1 = node_factory.get_node()
     l2 = node_factory.get_node()
 
-    for i in range(3):
-        # FIXME: we shouldn't disconnect on close?
-        ret = l1.rpc.connect(l2.info['id'], 'localhost', l2.port)
-        assert ret['id'] == l2.info['id']
+    ret = l1.rpc.connect(l2.info['id'], 'localhost', l2.port)
+    assert ret['id'] == l2.info['id']
 
-        l1.daemon.wait_for_log('Handed peer, entering loop')
-        l2.daemon.wait_for_log('Handed peer, entering loop')
+    for i in range(3):
         chan, _ = l1.fundchannel(l2, 10**6)
 
         l1.rpc.close(chan)
@@ -2546,7 +2586,7 @@ def test_forget_channel(node_factory):
 
     # Forcing should work
     l1.rpc.dev_forget_channel(l2.info['id'], True)
-    assert len(l1.rpc.listpeers()['peers']) == 0
+    wait_for(lambda: only_one(l1.rpc.listpeers()['peers'])['channels'] == [])
 
     # And restarting should keep that peer forgotten
     l1.restart()
@@ -2602,13 +2642,12 @@ def test_peerinfo(node_factory, bitcoind):
     # Close the channel to forget the peer
     l1.rpc.close(chan)
 
-    wait_for(lambda: not only_one(l1.rpc.listpeers(l2.info['id'])['peers'])['connected'])
-    wait_for(lambda: not only_one(l2.rpc.listpeers(l1.info['id'])['peers'])['connected'])
-
     # Make sure close tx hits mempool before we mine blocks.
     bitcoind.generate_block(100, wait_for_mempool=1)
     l1.daemon.wait_for_log('onchaind complete, forgetting peer')
     l2.daemon.wait_for_log('onchaind complete, forgetting peer')
+    assert only_one(l1.rpc.listpeers(l2.info['id'])['peers'])['channels'] == []
+    assert only_one(l2.rpc.listpeers(l1.info['id'])['peers'])['channels'] == []
 
     # The only channel was closed, everybody should have forgotten the nodes
     assert l1.rpc.listnodes()['nodes'] == []
@@ -2660,7 +2699,7 @@ def test_fundee_forget_funding_tx_unconfirmed(node_factory, bitcoind):
     # is much slower in VALGRIND mode and wait_for_log
     # could time out before lightningd processes all the
     # blocks.
-    blocks = 200
+    blocks = 50
     # opener
     l1 = node_factory.get_node()
     # peer
@@ -2669,14 +2708,16 @@ def test_fundee_forget_funding_tx_unconfirmed(node_factory, bitcoind):
 
     # Give opener some funds.
     l1.fundwallet(10**7)
-    # Let blocks settle.
-    time.sleep(1)
 
     def mock_sendrawtransaction(r):
         return {'id': r['id'], 'error': {'code': 100, 'message': 'sendrawtransaction disabled'}}
 
+    def mock_donothing(r):
+        return {'id': r['id'], 'result': {'success': True}}
+
     # Prevent opener from broadcasting funding tx (any tx really).
     l1.daemon.rpcproxy.mock_rpc('sendrawtransaction', mock_sendrawtransaction)
+    l2.daemon.rpcproxy.mock_rpc('sendrawtransaction', mock_donothing)
 
     # Fund the channel.
     # The process will complete, but opener will be unable
@@ -2688,10 +2729,52 @@ def test_fundee_forget_funding_tx_unconfirmed(node_factory, bitcoind):
     bitcoind.generate_block(blocks)
 
     # fundee will forget channel!
-    l2.daemon.wait_for_log('Forgetting channel: It has been {} blocks'.format(blocks))
+    # (Note that we let the last number be anything (hence the {}\d)
+    l2.daemon.wait_for_log(r'Forgetting channel: It has been {}\d blocks'.format(str(blocks)[:-1]))
 
-    # fundee will also forget and disconnect from peer.
-    assert len(l2.rpc.listpeers(l1.info['id'])['peers']) == 0
+    # fundee will also forget, but not disconnect from peer.
+    wait_for(lambda: only_one(l2.rpc.listpeers(l1.info['id'])['peers'])['channels'] == [])
+
+
+@pytest.mark.developer("needs --dev-max-funding-unconfirmed-blocks")
+@pytest.mark.openchannel('v2')
+def test_fundee_node_unconfirmed(node_factory, bitcoind):
+    """Test that fundee will successfully broadcast and
+    funder still has correct UTXOs/correctly advances the channel
+    """
+    # opener
+    l1, l2 = node_factory.line_graph(2, fundchannel=False)
+
+    # Give opener some funds.
+    l1.fundwallet(10**7)
+
+    start_amount = only_one(l1.rpc.listfunds()['outputs'])['amount_msat']
+
+    def mock_sendrawtransaction(r):
+        return {'id': r['id'], 'error': {'code': 100, 'message': 'sendrawtransaction disabled'}}
+
+    def mock_donothing(r):
+        time.sleep(10)
+        return bitcoind.rpc.sendrawtransaction(r['params'][0])
+
+    # Prevent both from broadcasting funding tx (any tx really).
+    l1.daemon.rpcproxy.mock_rpc('sendrawtransaction', mock_sendrawtransaction)
+    l2.daemon.rpcproxy.mock_rpc('sendrawtransaction', mock_donothing)
+
+    # Fund the channel.
+    # The process will complete, but opener will be unable
+    # to broadcast and confirm funding tx.
+    with pytest.raises(RpcError, match=r'sendrawtransaction disabled'):
+        l1.rpc.fundchannel(l2.info['id'], 10**6)
+
+    # Generate blocks until unconfirmed.
+    bitcoind.generate_block(1, wait_for_mempool=1)
+
+    # Check that l1 opened the channel
+    wait_for(lambda: only_one(only_one(l1.rpc.listpeers()['peers'])['channels'])['state'] == 'CHANNELD_NORMAL')
+    end_amount = only_one(l1.rpc.listfunds()['outputs'])['amount_msat']
+    # We should be out the onchaind fees
+    assert start_amount > end_amount + Millisatoshi(10 ** 7 * 100)
 
 
 @pytest.mark.developer("needs dev_fail")
@@ -2804,8 +2887,8 @@ def test_opener_feerate_reconnect(node_factory, bitcoind):
     l2.daemon.wait_for_log(r'dev_disconnect: \-WIRE_COMMITMENT_SIGNED')
 
     # Wait until they reconnect.
-    l1.daemon.wait_for_log('Peer transient failure in CHANNELD_NORMAL')
-    l1.daemon.wait_for_log('peer_disconnect_done')
+    l1.daemon.wait_for_logs(['Peer transient failure in CHANNELD_NORMAL',
+                             'peer_disconnect_done'])
     wait_for(lambda: l1.rpc.getpeer(l2.info['id'])['connected'])
 
     # Should work normally.
@@ -3159,19 +3242,20 @@ def test_feerate_spam(node_factory, chainparams):
         l1.daemon.wait_for_log('peer_out WIRE_UPDATE_FEE', timeout=5)
 
 
-@pytest.mark.developer("need dev-feerate")
+@pytest.mark.developer("need dev-feerate, dev-fast-reconnect")
 def test_feerate_stress(node_factory, executor):
     # Third node makes HTLC traffic less predictable.
     l1, l2, l3 = node_factory.line_graph(3, opts={'commit-time': 100,
-                                                  'may_reconnect': True})
+                                                  'may_reconnect': True,
+                                                  'dev-fast-reconnect': None})
 
     l1.pay(l2, 10**9 // 2)
     scid12 = l1.get_channel_scid(l2)
     scid23 = l2.get_channel_scid(l3)
 
-    routel1l3 = [{'msatoshi': '10002msat', 'id': l2.info['id'], 'delay': 11, 'channel': scid12},
-                 {'msatoshi': '10000msat', 'id': l3.info['id'], 'delay': 5, 'channel': scid23}]
-    routel2l1 = [{'msatoshi': '10000msat', 'id': l1.info['id'], 'delay': 5, 'channel': scid12}]
+    routel1l3 = [{'amount_msat': '10002msat', 'id': l2.info['id'], 'delay': 11, 'channel': scid12},
+                 {'amount_msat': '10000msat', 'id': l3.info['id'], 'delay': 5, 'channel': scid23}]
+    routel2l1 = [{'amount_msat': '10000msat', 'id': l1.info['id'], 'delay': 5, 'channel': scid12}]
 
     rate = 1875
     NUM_ATTEMPTS = 25
@@ -3225,7 +3309,7 @@ def test_pay_disconnect_stress(node_factory, executor):
                                                                   '-WIRE_COMMITMENT_SIGNED']}])
 
         scid12 = l1.get_channel_scid(l2)
-        routel2l1 = [{'msatoshi': '10000msat', 'id': l1.info['id'], 'delay': 5, 'channel': scid12}]
+        routel2l1 = [{'amount_msat': '10000msat', 'id': l1.info['id'], 'delay': 5, 'channel': scid12}]
 
         # Get invoice from l1 to pay.
         inv = l1.rpc.invoice(10000, "invoice", "invoice")
@@ -3273,12 +3357,11 @@ def test_wumbo_channels(node_factory, bitcoind):
 
     # Connect l3, get gossip.
     l3.rpc.connect(l1.info['id'], 'localhost', port=l1.port)
-    wait_for(lambda: len(l3.rpc.listnodes(l1.info['id'])['nodes']) == 1)
-    wait_for(lambda: 'features' in only_one(l3.rpc.listnodes(l1.info['id'])['nodes']))
 
-    # Make sure channel capacity is what we expected.
-    assert ([c['amount_msat'] for c in l3.rpc.listchannels()['channels']]
-            == [Millisatoshi(str(1 << 24) + "sat")] * 2)
+    # Make sure channel capacity is what we expected (might need to wait for
+    # both channel updates!
+    wait_for(lambda: [c['amount_msat'] for c in l3.rpc.listchannels()['channels']]
+             == [Millisatoshi(str(1 << 24) + "sat")] * 2)
 
     # Make sure channel features are right from channel_announcement
     assert ([c['features'] for c in l3.rpc.listchannels()['channels']]
@@ -3394,7 +3477,7 @@ def test_htlc_retransmit_order(node_factory, executor):
     invoices = [l2.rpc.invoice(1000, str(x), str(x)) for x in range(NUM_HTLCS)]
 
     routestep = {
-        'msatoshi': 1000,
+        'amount_msat': 1000,
         'id': l2.info['id'],
         'delay': 5,
         'channel': '1x1x1'  # note: can be bogus for 1-hop direct payments
@@ -3514,7 +3597,7 @@ def test_upgrade_statickey_onchaind(node_factory, executor, bitcoind):
 
     # Make sure another commitment happens, sending failed payment.
     routestep = {
-        'msatoshi': 1,
+        'amount_msat': 1,
         'id': l2.info['id'],
         'delay': 5,
         'channel': '1x1x1'  # note: can be bogus for 1-hop direct payments
@@ -3535,7 +3618,8 @@ def test_upgrade_statickey_onchaind(node_factory, executor, bitcoind):
     l2.wait_for_onchaind_broadcast('OUR_PENALTY_TX',
                                    'THEIR_REVOKED_UNILATERAL/DELAYED_CHEAT_OUTPUT_TO_THEM')
     bitcoind.generate_block(100)
-    wait_for(lambda: len(l2.rpc.listpeers()['peers']) == 0)
+    # This works even if they disconnect and listpeers() is empty:
+    wait_for(lambda: all([p['channels'] == [] for p in l2.rpc.listpeers()['peers']]))
 
     # TEST 2: Cheat from post-upgrade.
     node_factory.join_nodes([l1, l2])
@@ -3559,7 +3643,8 @@ def test_upgrade_statickey_onchaind(node_factory, executor, bitcoind):
     l2.wait_for_onchaind_broadcast('OUR_PENALTY_TX',
                                    'THEIR_REVOKED_UNILATERAL/DELAYED_CHEAT_OUTPUT_TO_THEM')
     bitcoind.generate_block(100)
-    wait_for(lambda: len(l2.rpc.listpeers()['peers']) == 0)
+    # This works even if they disconnect and listpeers() is empty:
+    wait_for(lambda: all([p['channels'] == [] for p in l2.rpc.listpeers()['peers']]))
 
     # TEST 3: Unilateral close from pre-upgrade
     node_factory.join_nodes([l1, l2])
@@ -3587,7 +3672,8 @@ def test_upgrade_statickey_onchaind(node_factory, executor, bitcoind):
     bitcoind.generate_block(5)
     bitcoind.generate_block(100, wait_for_mempool=1)
 
-    wait_for(lambda: len(l2.rpc.listpeers()['peers']) == 0)
+    # This works even if they disconnect and listpeers() is empty:
+    wait_for(lambda: all([p['channels'] == [] for p in l2.rpc.listpeers()['peers']]))
 
     # TEST 4: Unilateral close from post-upgrade
     node_factory.join_nodes([l1, l2])
@@ -3612,7 +3698,8 @@ def test_upgrade_statickey_onchaind(node_factory, executor, bitcoind):
     bitcoind.generate_block(5)
     bitcoind.generate_block(100, wait_for_mempool=1)
 
-    wait_for(lambda: len(l2.rpc.listpeers()['peers']) == 0)
+    # This works even if they disconnect and listpeers() is empty:
+    wait_for(lambda: all([p['channels'] == [] for p in l2.rpc.listpeers()['peers']]))
 
 
 @unittest.skipIf(not EXPERIMENTAL_FEATURES, "upgrade protocol not available")
@@ -3638,7 +3725,7 @@ def test_upgrade_statickey_fail(node_factory, executor, bitcoind):
                                                'hold-result': 'fail'}])
 
     # This HTLC will fail
-    l1.rpc.sendpay([{'msatoshi': 1000, 'id': l2.info['id'], 'delay': 5, 'channel': '1x1x1'}], '00' * 32, payment_secret='00' * 32)
+    l1.rpc.sendpay([{'amount_msat': 1000, 'id': l2.info['id'], 'delay': 5, 'channel': '1x1x1'}], '00' * 32, payment_secret='00' * 32)
 
     # Each one should cause one disconnection, no upgrade.
     for d in l1_disconnects + l2_disconnects:
@@ -3711,7 +3798,7 @@ def test_htlc_failed_noclose(node_factory):
 
     inv = l2.rpc.invoice(1000, "test", "test")
     routestep = {
-        'msatoshi': FUNDAMOUNT * 1000,
+        'amount_msat': FUNDAMOUNT * 1000,
         'id': l2.info['id'],
         'delay': 5,
         'channel': '1x1x1'  # note: can be bogus for 1-hop direct payments
@@ -3729,6 +3816,46 @@ def test_htlc_failed_noclose(node_factory):
 
     time.sleep(35)
     assert l1.rpc.getpeer(l2.info['id'])['connected']
+
+
+@pytest.mark.openchannel('v2')
+@pytest.mark.developer("dev-no-reconnect required")
+def test_multichan_stress(node_factory, executor, bitcoind):
+    """Test multiple channels between same nodes"""
+    l1, l2, l3 = node_factory.line_graph(3, opts={'may_reconnect': True,
+                                                  'dev-no-reconnect': None})
+
+    # Now fund *second* channel l2->l3 (slightly larger)
+    bitcoind.rpc.sendtoaddress(l2.rpc.newaddr()['bech32'], 0.1)
+    bitcoind.generate_block(1)
+    sync_blockheight(bitcoind, [l2])
+    l2.rpc.fundchannel(l3.info['id'], '0.01001btc')
+    assert(len(only_one(l2.rpc.listpeers(l3.info['id'])['peers'])['channels']) == 2)
+    assert(len(only_one(l3.rpc.listpeers(l2.info['id'])['peers'])['channels']) == 2)
+
+    # Make sure gossip works.
+    bitcoind.generate_block(6, wait_for_mempool=1)
+    wait_for(lambda: len(l1.rpc.listchannels(source=l3.info['id'])['channels']) == 2)
+
+    def send_many_payments():
+        for i in range(30):
+            inv = l3.rpc.invoice(100, "label-" + str(i), "desc")['bolt11']
+            try:
+                l1.rpc.pay(inv)
+            except RpcError:
+                pass
+
+    # Send a heap of payments, while reconnecting...
+    fut = executor.submit(send_many_payments)
+
+    for i in range(10):
+        l3.rpc.disconnect(l2.info['id'], force=True)
+        l3.rpc.connect(l2.info['id'], 'localhost', l2.port)
+    fut.result(TIMEOUT)
+
+    wait_for(lambda: only_one(l3.rpc.listpeers(l2.info['id'])['peers'])['connected'])
+    inv = l3.rpc.invoice(50000000, "invoice4", "invoice4")
+    l1.rpc.pay(inv['bolt11'])
 
 
 @pytest.mark.developer("dev-no-reconnect required")
@@ -3816,8 +3943,8 @@ def test_websocket(node_factory):
             break
 
     # Check node_announcement has websocket
-    assert (only_one(l2.rpc.listnodes(l1.info['id'])['nodes'])['addresses']
-            == [{'type': 'ipv4', 'address': '127.0.0.1', 'port': port2}, {'type': 'websocket', 'port': ws_port}])
+    ws_address = {'type': 'websocket', 'port': ws_port}
+    assert ws_address in only_one(l2.rpc.listnodes(l1.info['id'])['nodes'])['addresses']
 
 
 @pytest.mark.developer("dev-disconnect required")
@@ -3825,14 +3952,20 @@ def test_ping_timeout(node_factory):
     # Disconnects after this, but doesn't know it.
     l1_disconnects = ['xWIRE_PING']
 
-    l1, l2 = node_factory.line_graph(2, opts=[{'dev-no-reconnect': None,
-                                               'disconnect': l1_disconnects},
-                                              {}])
-    # Takes 15-45 seconds, then another to try second ping
-    # Because of ping timer randomness we don't know which side hangs up first
-    wait_for(lambda: l1.rpc.getpeer(l2.info['id'])['connected'] is False, timeout=45 + 45 + 5)
-    wait_for(lambda: (l1.daemon.is_in_log('Last ping unreturned: hanging up')
-                      or l2.daemon.is_in_log('Last ping unreturned: hanging up')))
+    l1, l2 = node_factory.get_nodes(2, opts=[{'dev-no-reconnect': None,
+                                              'disconnect': l1_disconnects},
+                                             {'dev-no-ping-timer': None}])
+    l1.rpc.connect(l2.info['id'], 'localhost', l2.port)
+
+    # This can take 10 seconds (dev-fast-gossip means timer fires every 5 seconds)
+    l1.daemon.wait_for_log('seeker: startup peer finished', timeout=15)
+    # Ping timers runs at 15-45 seconds, *but* only fires if also 60 seconds
+    # after previous traffic.
+    l1.daemon.wait_for_log('dev_disconnect: xWIRE_PING', timeout=60 + 45 + 5)
+
+    # Next pign will cause hangup
+    l1.daemon.wait_for_log('Last ping unreturned: hanging up', timeout=45 + 5)
+    wait_for(lambda: l1.rpc.listpeers(l2.info['id'])['peers'] == [])
 
 
 @pytest.mark.openchannel('v1')
@@ -3853,6 +3986,8 @@ def test_multichan(node_factory, executor, bitcoind):
     assert(len(only_one(l3.rpc.listpeers(l2.info['id'])['peers'])['channels']) == 2)
 
     bitcoind.generate_block(1, wait_for_mempool=1)
+    # Make sure new channel is also CHANNELD_NORMAL
+    wait_for(lambda: [c['state'] for c in only_one(l2.rpc.listpeers(l3.info['id'])['peers'])['channels']] == ["CHANNELD_NORMAL", "CHANNELD_NORMAL"])
 
     # Dance around to get the *other* scid.
     wait_for(lambda: all(['short_channel_id' in c for c in l3.rpc.listpeers()['peers'][0]['channels']]))
@@ -3866,12 +4001,12 @@ def test_multichan(node_factory, executor, bitcoind):
         scid23b = scids[0]
 
     # Test paying by each,
-    route = [{'msatoshi': 100001001,
+    route = [{'amount_msat': 100001001,
               'id': l2.info['id'],
               'delay': 11,
               # Unneeded
               'channel': scid12},
-             {'msatoshi': 100000000,
+             {'amount_msat': 100000000,
               'id': l3.info['id'],
               'delay': 5,
               'channel': scid23a}]
@@ -3958,3 +4093,63 @@ def test_multichan(node_factory, executor, bitcoind):
 
     inv = l3.rpc.invoice(100000000, "invoice4", "invoice4")
     l1.rpc.pay(inv['bolt11'])
+
+
+@pytest.mark.developer("dev-no-reconnect required")
+def test_mutual_reconnect_race(node_factory, executor, bitcoind):
+    """Test simultaneous reconnect between nodes"""
+    l1, l2 = node_factory.line_graph(2, opts={'may_reconnect': True,
+                                              'dev-no-reconnect': None})
+
+    def send_many_payments():
+        for i in range(20):
+            time.sleep(0.5)
+            inv = l2.rpc.invoice(100, "label-" + str(i), "desc")['bolt11']
+            try:
+                l1.rpc.pay(inv)
+            except RpcError:
+                pass
+
+    # Send a heap of payments, while reconnecting...
+    fut = executor.submit(send_many_payments)
+
+    for i in range(10):
+        try:
+            l1.rpc.disconnect(l2.info['id'], force=True)
+        except RpcError:
+            pass
+        time.sleep(1)
+        # Aim for both at once!
+        executor.submit(l1.rpc.connect, l2.info['id'], 'localhost', l2.port)
+        executor.submit(l2.rpc.connect, l1.info['id'], 'localhost', l1.port)
+
+    # Wait for things to settle down, then make sure we're actually connected.
+    # Naively, you'd think we should be, but in fact, two connects which race
+    # can (do!) result in both disconnecting, thinking the other side is more
+    # recent.
+    time.sleep(1)
+    if not only_one(l1.rpc.listpeers(l2.info['id'])['peers'])['connected']:
+        l1.rpc.connect(l2.info['id'], 'localhost', l2.port)
+
+    # Now payments should finish!
+    fut.result(TIMEOUT)
+
+    wait_for(lambda: only_one(l1.rpc.listpeers(l2.info['id'])['peers'])['connected'])
+    inv = l2.rpc.invoice(100000000, "invoice4", "invoice4")
+    l1.rpc.pay(inv['bolt11'])
+
+
+def test_no_reconnect_awating_unilateral(node_factory, bitcoind):
+    l1, l2 = node_factory.line_graph(2, opts={'may_reconnect': True})
+    l2.stop()
+
+    # Close immediately.
+    l1.rpc.close(l2.info['id'], 1)
+
+    wait_for(lambda: only_one(only_one(l1.rpc.listpeers(l2.info['id'])['peers'])['channels'])['state'] == 'AWAITING_UNILATERAL')
+
+    # After switching to AWAITING_UNILATERAL it will *not* try to reconnect.
+    l1.daemon.wait_for_log("State changed from CHANNELD_SHUTTING_DOWN to AWAITING_UNILATERAL")
+    time.sleep(10)
+
+    assert not l1.daemon.is_in_log('Will try reconnect', start=l1.daemon.logsearch_start)

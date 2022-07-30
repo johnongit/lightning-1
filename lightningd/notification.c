@@ -1,5 +1,5 @@
 #include "config.h"
-#include <common/json_helpers.h>
+#include <common/configdir.h>
 #include <common/type_to_string.h>
 #include <lightningd/channel.h>
 #include <lightningd/coin_mvts.h>
@@ -205,7 +205,7 @@ static void channel_opened_notification_serialize(struct json_stream *stream,
 {
 	json_object_start(stream, "channel_opened");
 	json_add_node_id(stream, "id", node_id);
-	json_add_amount_sat_only(stream, "amount", *funding_sat);
+	json_add_amount_sats_deprecated(stream, "amount", "funding_msat", *funding_sat);
 	json_add_txid(stream, "funding_txid", funding_txid);
 	json_add_bool(stream, "funding_locked", funding_locked);
 	json_object_end(stream);
@@ -302,7 +302,13 @@ static void forward_event_notification_serialize(struct json_stream *stream,
 	/* Here is more neat to initial a forwarding structure than
 	 * to pass in a bunch of parameters directly*/
 	struct forwarding *cur = tal(tmpctx, struct forwarding);
-	cur->channel_in = *in->key.channel->scid;
+
+	/* We use the LOCAL alias, not the REMOTE, despite the route
+	 * the the sender is using probably using the REMOTE
+	 * alias. The LOCAL one is controlled by us, and we keep it
+	 * stable. */
+	cur->channel_in = *channel_scid_or_local_alias(in->key.channel);
+
 	cur->msat_in = in->msat;
 	if (scid_out) {
 		cur->channel_out = *scid_out;
@@ -393,7 +399,7 @@ static void sendpay_failure_notification_serialize(struct json_stream *stream,
 
 	/* In line with the format of json error returned
 	 * by sendpay_fail(). */
-	json_add_member(stream, "code", false, "%" PRIerrcode, pay_errcode);
+	json_add_errcode(stream, "code", pay_errcode);
 	json_add_string(stream, "message", errmsg);
 
 	json_object_start(stream, "data");
@@ -472,25 +478,37 @@ static void coin_movement_notification_serialize(struct json_stream *stream,
 	json_object_start(stream, "coin_movement");
 	json_add_num(stream, "version", mvt->version);
 	json_add_node_id(stream, "node_id", mvt->node_id);
+	if (mvt->peer_id)
+		json_add_node_id(stream, "peer_id", mvt->peer_id);
 	json_add_string(stream, "type", mvt_type_str(mvt->type));
 	json_add_string(stream, "account_id", mvt->account_id);
 	if (mvt->originating_acct)
 		json_add_string(stream, "originating_account",
 				mvt->originating_acct);
 	json_mvt_id(stream, mvt->type, &mvt->id);
-	json_add_amount_msat_only(stream, "credit", mvt->credit);
-	json_add_amount_msat_only(stream, "debit", mvt->debit);
+	if (deprecated_apis) {
+		json_add_amount_msat_only(stream, "credit", mvt->credit);
+		json_add_amount_msat_only(stream, "debit", mvt->debit);
+	}
+	json_add_amount_msat_only(stream, "credit_msat", mvt->credit);
+	json_add_amount_msat_only(stream, "debit_msat", mvt->debit);
+
 	/* Only chain movements */
 	if (mvt->output_val)
-		json_add_amount_sat_only(stream, "output_value",
-					 *mvt->output_val);
+		json_add_amount_sats_deprecated(stream, "output_value",
+						"output_msat",
+						*mvt->output_val);
 	if (mvt->output_count > 0)
 		json_add_num(stream, "output_count",
 			     mvt->output_count);
 
-	if (mvt->fees)
-		json_add_amount_msat_only(stream, "fees",
+	if (mvt->fees) {
+		if (deprecated_apis)
+			json_add_amount_msat_only(stream, "fees",
+						  *mvt->fees);
+		json_add_amount_msat_only(stream, "fees_msat",
 					  *mvt->fees);
+	}
 
 	json_array_start(stream, "tags");
 	for (size_t i = 0; i < tal_count(mvt->tags); i++)
@@ -534,7 +552,10 @@ static void balance_snapshot_notification_serialize(struct json_stream *stream, 
 		json_object_start(stream, NULL);
 		json_add_string(stream, "account_id",
 				snap->accts[i]->acct_id);
-		json_add_amount_msat_only(stream, "balance",
+		if (deprecated_apis)
+			json_add_amount_msat_only(stream, "balance",
+						  snap->accts[i]->balance);
+		json_add_amount_msat_only(stream, "balance_msat",
 					  snap->accts[i]->balance);
 		json_add_string(stream, "coin_type", snap->accts[i]->bip173_name);
 		json_object_end(stream);

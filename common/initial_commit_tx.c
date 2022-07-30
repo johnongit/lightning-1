@@ -236,7 +236,7 @@ struct bitcoin_tx *initial_commit_tx(const tal_t *ctx,
 		 * If `option_anchors` applies to the commitment
 		 * transaction, the `to_remote` output is encumbered by a one
 		 * block csv lock.
-		 *    <remote_pubkey> OP_CHECKSIGVERIFY 1 OP_CHECKSEQUENCEVERIFY
+		 *    <remotepubkey> OP_CHECKSIGVERIFY 1 OP_CHECKSEQUENCEVERIFY
 		 *
 		 *...
 		 * Otherwise, this output is a simple P2WPKH to `remotepubkey`.
@@ -291,7 +291,7 @@ struct bitcoin_tx *initial_commit_tx(const tal_t *ctx,
 	/* BOLT #3:
 	 *
 	 * 9. Sort the outputs into [BIP 69+CLTV
-	 *    order](#transaction-input-and-output-ordering)
+	 *    order](#transaction-output-ordering)
 	 */
 	permute_outputs(tx, NULL, output_order);
 

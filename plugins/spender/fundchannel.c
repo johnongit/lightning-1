@@ -1,7 +1,7 @@
 #include "config.h"
 #include <ccan/array_size/array_size.h>
+#include <common/json_param.h>
 #include <common/json_stream.h>
-#include <common/json_tok.h>
 #include <plugins/spender/fundchannel.h>
 
 static struct command_result *
@@ -28,6 +28,15 @@ fundchannel_get_result(struct command *cmd,
 		       const jsmntok_t *result,
 		       void *nothing UNUSED);
 
+/* Generally a bad idea, but makes sense here. */
+static struct command_result *param_tok(struct command *cmd, const char *name,
+					const char *buffer, const jsmntok_t * tok,
+					const jsmntok_t **out)
+{
+	*out = tok;
+	return NULL;
+}
+
 /* Thin wrapper aroud multifundchannel.  */
 static struct command_result *
 json_fundchannel(struct command *cmd,
@@ -44,6 +53,7 @@ json_fundchannel(struct command *cmd,
 	const jsmntok_t *close_to;
 	const jsmntok_t *request_amt;
 	const jsmntok_t *compact_lease;
+	const jsmntok_t *mindepth;
 
 	struct out_req *req;
 
@@ -58,6 +68,7 @@ json_fundchannel(struct command *cmd,
 		   p_opt("close_to", param_tok, &close_to),
 		   p_opt("request_amt", param_tok, &request_amt),
 		   p_opt("compact_lease", param_tok, &compact_lease),
+		   p_opt("mindepth", param_tok, &mindepth),
 		   NULL))
 		return command_param_failed();
 
@@ -84,6 +95,10 @@ json_fundchannel(struct command *cmd,
 		json_add_tok(req->js, "request_amt", request_amt, buf);
 		json_add_tok(req->js, "compact_lease", compact_lease, buf);
 	}
+
+	if (mindepth)
+		json_add_tok(req->js, "mindepth", mindepth, buf);
+
 	json_object_end(req->js);
 	json_array_end(req->js);
 	if (feerate)

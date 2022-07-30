@@ -9,11 +9,11 @@ SYNOPSIS
 DESCRIPTION
 -----------
 
-The **feerates** command returns the feerates that C-lightning will use.
+The **feerates** command returns the feerates that CLN will use.
 The feerates will be based on the recommended feerates from the backend.
 The backend may fail to provide estimates, but if it was able to provide
-estimates in the past, C-lightning will continue to use those for a while.
-C-lightning will also smoothen feerate estimations from the backend.
+estimates in the past, CLN will continue to use those for a while.
+CLN will also smoothen feerate estimations from the backend.
 
 *style* is either of the two strings:
 
@@ -119,4 +119,4 @@ RESOURCES
 
 Main web site: <https://github.com/ElementsProject/lightning>
 
-[comment]: # ( SHA256STAMP:8fe321fcba7b3a471f4f83f98638dbc820fc0abe91f3d53ca55fdb0222e17a8d)
+[comment]: # ( SHA256STAMP:96fde8cf67c9b0dda5a1866dfadfb1d7da7e593b3080948662070382d4a9537f)

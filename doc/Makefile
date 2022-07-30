@@ -9,10 +9,18 @@ MANPAGES := doc/lightning-cli.1 \
 	doc/lightningd-config.5 \
 	doc/lightning-addgossip.7 \
 	doc/lightning-autocleaninvoice.7 \
+	doc/lightning-bkpr-channelsapy.7 \
+	doc/lightning-bkpr-dumpincomecsv.7 \
+	doc/lightning-bkpr-inspect.7 \
+	doc/lightning-bkpr-listaccountevents.7 \
+	doc/lightning-bkpr-listbalances.7 \
+	doc/lightning-bkpr-listincome.7 \
 	doc/lightning-check.7 \
 	doc/lightning-checkmessage.7 \
 	doc/lightning-close.7 \
 	doc/lightning-connect.7 \
+	doc/lightning-commando.7 \
+	doc/lightning-commando-rune.7 \
 	doc/lightning-createonion.7 \
 	doc/lightning-createinvoice.7 \
 	doc/lightning-datastore.7 \
@@ -24,6 +32,7 @@ MANPAGES := doc/lightning-cli.1 \
 	doc/lightning-delpay.7 \
 	doc/lightning-disableoffer.7 \
 	doc/lightning-disconnect.7 \
+	doc/lightning-emergencyrecover.7 \
 	doc/lightning-feerates.7 \
 	doc/lightning-fetchinvoice.7 \
 	doc/lightning-fundchannel.7 \
@@ -33,7 +42,6 @@ MANPAGES := doc/lightning-cli.1 \
 	doc/lightning-funderupdate.7 \
 	doc/lightning-fundpsbt.7 \
 	doc/lightning-getroute.7 \
-	doc/lightning-getsharedsecret.7 \
 	doc/lightning-hsmtool.8 \
 	doc/lightning-invoice.7 \
 	doc/lightning-keysend.7 \
@@ -46,6 +54,7 @@ MANPAGES := doc/lightning-cli.1 \
 	doc/lightning-listpays.7 \
 	doc/lightning-listpeers.7 \
 	doc/lightning-listsendpays.7 \
+	doc/lightning-makesecret.7 \
 	doc/lightning-multifundchannel.7 \
 	doc/lightning-multiwithdraw.7 \
 	doc/lightning-newaddr.7 \
@@ -60,6 +69,7 @@ MANPAGES := doc/lightning-cli.1 \
 	doc/lightning-pay.7 \
 	doc/lightning-parsefeerate.7 \
 	doc/lightning-plugin.7 \
+	doc/lightning-recoverchannel.7 \
 	doc/lightning-reserveinputs.7 \
 	doc/lightning-sendinvoice.7 \
 	doc/lightning-sendonion.7 \
@@ -69,6 +79,7 @@ MANPAGES := doc/lightning-cli.1 \
 	doc/lightning-setchannelfee.7 \
 	doc/lightning-sendcustommsg.7 \
 	doc/lightning-signmessage.7 \
+	doc/lightning-staticbackup.7 \
 	doc/lightning-txprepare.7 \
 	doc/lightning-txdiscard.7 \
 	doc/lightning-txsend.7 \

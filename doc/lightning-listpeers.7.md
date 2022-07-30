@@ -46,7 +46,7 @@ On success, an object containing **peers** is returned.  It is an array of objec
   - **state** (string): the channel state, in particular "CHANNELD_NORMAL" means the channel can be used normally (one of "OPENINGD", "CHANNELD_AWAITING_LOCKIN", "CHANNELD_NORMAL", "CHANNELD_SHUTTING_DOWN", "CLOSINGD_SIGEXCHANGE", "CLOSINGD_COMPLETE", "AWAITING_UNILATERAL", "FUNDING_SPEND_SEEN", "ONCHAIN", "DUALOPEND_OPEN_INIT", "DUALOPEND_AWAITING_LOCKIN")
   - **opener** (string): Who initiated the channel (one of "local", "remote")
   - **features** (array of strings):
-    - BOLT #9 features which apply to this channel (one of "option_static_remotekey", "option_anchor_outputs")
+    - BOLT #9 features which apply to this channel (one of "option_static_remotekey", "option_anchor_outputs", "option_zeroconf")
   - **scratch_txid** (txid, optional): The txid we would use if we went onchain now
   - **feerate** (object, optional): Feerates for the current tx:
     - **perkw** (u32): Feerate per 1000 weight (i.e kSipa)
@@ -69,7 +69,7 @@ On success, an object containing **peers** is returned.  It is an array of objec
     - **scratch_txid** (txid): The commitment transaction txid we would use if we went onchain now
   - **close_to** (hex, optional): scriptPubkey which we have to close to if we mutual close
   - **private** (boolean, optional): if False, we will not announce this channel
-  - **closer** (string, optional): Who initiated the channel close (`null` is deprecated!) (one of "local", "remote", *null*)
+  - **closer** (string, optional): Who initiated the channel close (one of "local", "remote")
   - **funding** (object, optional):
     - **local_msat** (msat): Amount of channel we funded
     - **remote_msat** (msat): Amount of channel they funded
@@ -92,6 +92,9 @@ On success, an object containing **peers** is returned.  It is an array of objec
   - **their_to_self_delay** (u32, optional): the number of blocks before they can take their funds if they unilateral close
   - **our_to_self_delay** (u32, optional): the number of blocks before we can take our funds if we unilateral close
   - **max_accepted_htlcs** (u32, optional): Maximum number of incoming HTLC we will accept at once
+  - **alias** (object, optional):
+    - **local** (short_channel_id, optional): An alias assigned by this node to this channel, used for outgoing payments
+    - **remote** (short_channel_id, optional): An alias assigned by the remote node to this channel, usable in routehints and invoices
   - **state_changes** (array of objects, optional): Prior state changes:
     - **timestamp** (string): UTC timestamp of form YYYY-mm-ddTHH:MM:SS.%03dZ
     - **old_state** (string): Previous state (one of "OPENINGD", "CHANNELD_AWAITING_LOCKIN", "CHANNELD_NORMAL", "CHANNELD_SHUTTING_DOWN", "CLOSINGD_SIGEXCHANGE", "CLOSINGD_COMPLETE", "AWAITING_UNILATERAL", "FUNDING_SPEND_SEEN", "ONCHAIN", "DUALOPEND_OPEN_INIT", "DUALOPEND_AWAITING_LOCKIN")
@@ -159,6 +162,7 @@ If **connected** is *true*:
   - **netaddr** (array of strings): A single entry array:
     - address, e.g. 1.2.3.4:1234
   - **features** (hex): bitmap of BOLT #9 features from peer's INIT message
+  - **remote_addr** (string, optional): The public IPv4/6 address the peer sees us from, e.g. 1.2.3.4:1234
 
 [comment]: # (GENERATE-FROM-SCHEMA-END)
 
@@ -380,4 +384,4 @@ Main web site: <https://github.com/ElementsProject/lightning> Lightning
 RFC site (BOLT \#9):
 <https://github.com/lightningnetwork/lightning-rfc/blob/master/09-features.md>
 
-[comment]: # ( SHA256STAMP:6b0ec5c899c8685487190209f594635030205a275e1dc6d61a7b057adbf66192)
+[comment]: # ( SHA256STAMP:c26d3094925387ee935efc6351400bca374c361e5956ff13f10b228773f8e389)

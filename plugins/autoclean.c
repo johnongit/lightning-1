@@ -1,6 +1,7 @@
 #include "config.h"
 #include <ccan/array_size/array_size.h>
-#include <common/json_tok.h>
+#include <common/json_param.h>
+#include <common/json_stream.h>
 #include <plugins/libplugin.h>
 
 static u64 cycle_seconds = 0, expired_by = 86400;
@@ -47,12 +48,14 @@ static struct command_result *json_autocleaninvoice(struct command *cmd,
 	cycle_seconds = *cycle;
 	expired_by = *exby;
 
+	cleantimer = tal_free(cleantimer);
+
 	if (cycle_seconds == 0) {
 		response = jsonrpc_stream_success(cmd);
 		json_add_bool(response, "enabled", false);
 		return command_finished(cmd, response);
 	}
-	tal_free(cleantimer);
+
 	cleantimer = plugin_timer(cmd->plugin, time_from_sec(cycle_seconds),
 				  do_clean, cmd->plugin);
 

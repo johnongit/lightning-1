@@ -346,7 +346,9 @@ openchannel_finished(struct multifundchannel_command *mfc)
 			json_add_node_id(out, "id", &dest->id);
 			json_add_string(out, "method", "openchannel_signed");
 			if (dest->error_data)
-				json_add_jsonstr(out, "data", dest->error_data);
+				json_add_jsonstr(out, "data",
+						 dest->error_data,
+						 strlen(dest->error_data));
 			json_object_end(out);
 
 			return mfc_finished(mfc, out);
@@ -619,10 +621,9 @@ funding_transaction_established(struct multifundchannel_command *mfc)
 
 	/* If all we've got is v2 destinations, we're just waiting
 	 * for all of our peers to send us their sigs.
-	 * That callback triggers separately, so we just return
-	 * a 'still pending' here */
+	 * Let's check if we've gotten them yet */
 	if (dest_count(mfc, FUND_CHANNEL) == 0)
-		return command_still_pending(mfc->cmd);
+		return check_sigs_ready(mfc);
 
 	/* For any v1 destination, we need to update the destination
 	 * outnum with the correct outnum on the now-known

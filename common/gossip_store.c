@@ -1,6 +1,5 @@
 #include "config.h"
 #include <ccan/crc32c/crc32c.h>
-#include <common/gossip_rcvd_filter.h>
 #include <common/gossip_store.h>
 #include <common/per_peer_state.h>
 #include <common/status.h>
@@ -50,10 +49,69 @@ static size_t reopen_gossip_store(int *gossip_store_fd, const u8 *msg)
 	return equivalent_offset;
 }
 
+static bool public_msg_type(enum peer_wire type)
+{
+	/* This switch statement makes you think about new types as they
+	 * are introduced. */
+	switch (type) {
+	case WIRE_INIT:
+	case WIRE_ERROR:
+	case WIRE_WARNING:
+	case WIRE_PING:
+	case WIRE_PONG:
+	case WIRE_TX_ADD_INPUT:
+	case WIRE_TX_ADD_OUTPUT:
+	case WIRE_TX_REMOVE_INPUT:
+	case WIRE_TX_REMOVE_OUTPUT:
+	case WIRE_TX_COMPLETE:
+	case WIRE_TX_SIGNATURES:
+	case WIRE_OPEN_CHANNEL:
+	case WIRE_ACCEPT_CHANNEL:
+	case WIRE_FUNDING_CREATED:
+	case WIRE_FUNDING_SIGNED:
+	case WIRE_FUNDING_LOCKED:
+	case WIRE_OPEN_CHANNEL2:
+	case WIRE_ACCEPT_CHANNEL2:
+	case WIRE_INIT_RBF:
+	case WIRE_ACK_RBF:
+	case WIRE_SHUTDOWN:
+	case WIRE_CLOSING_SIGNED:
+	case WIRE_UPDATE_ADD_HTLC:
+	case WIRE_UPDATE_FULFILL_HTLC:
+	case WIRE_UPDATE_FAIL_HTLC:
+	case WIRE_UPDATE_FAIL_MALFORMED_HTLC:
+	case WIRE_COMMITMENT_SIGNED:
+	case WIRE_REVOKE_AND_ACK:
+	case WIRE_UPDATE_FEE:
+	case WIRE_UPDATE_BLOCKHEIGHT:
+	case WIRE_CHANNEL_REESTABLISH:
+	case WIRE_ANNOUNCEMENT_SIGNATURES:
+	case WIRE_QUERY_SHORT_CHANNEL_IDS:
+	case WIRE_REPLY_SHORT_CHANNEL_IDS_END:
+	case WIRE_QUERY_CHANNEL_RANGE:
+	case WIRE_REPLY_CHANNEL_RANGE:
+	case WIRE_GOSSIP_TIMESTAMP_FILTER:
+	case WIRE_OBS2_ONION_MESSAGE:
+	case WIRE_ONION_MESSAGE:
+#if EXPERIMENTAL_FEATURES
+	case WIRE_STFU:
+#endif
+		return false;
+	case WIRE_CHANNEL_ANNOUNCEMENT:
+	case WIRE_NODE_ANNOUNCEMENT:
+	case WIRE_CHANNEL_UPDATE:
+		return true;
+	}
+
+	/* Actually, we do have other (internal) messages. */
+	return false;
+}
+
 u8 *gossip_store_next(const tal_t *ctx,
 		      int *gossip_store_fd,
 		      u32 timestamp_min, u32 timestamp_max,
 		      bool push_only,
+		      bool with_spam,
 		      size_t *off, size_t *end)
 {
 	u8 *msg = NULL;
@@ -61,7 +119,7 @@ u8 *gossip_store_next(const tal_t *ctx,
 	while (!msg) {
 		struct gossip_hdr hdr;
 		u32 msglen, checksum, timestamp;
-		bool push;
+		bool push, ratelimited;
 		int type, r;
 
 		r = pread(*gossip_store_fd, &hdr, sizeof(hdr), *off);
@@ -70,6 +128,7 @@ u8 *gossip_store_next(const tal_t *ctx,
 
 		msglen = be32_to_cpu(hdr.len);
 		push = (msglen & GOSSIP_STORE_LEN_PUSH_BIT);
+		ratelimited = (msglen & GOSSIP_STORE_LEN_RATELIMIT_BIT);
 		msglen &= GOSSIP_STORE_LEN_MASK;
 
 		/* Skip any deleted entries. */
@@ -78,12 +137,20 @@ u8 *gossip_store_next(const tal_t *ctx,
 			continue;
 		}
 
-		checksum = be32_to_cpu(hdr.crc);
+		/* Skip any timestamp filtered */
 		timestamp = be32_to_cpu(hdr.timestamp);
+		if (!push &&
+		    !timestamp_filter(timestamp_min, timestamp_max,
+				      timestamp)) {
+			*off += r + msglen;
+			continue;
+		}
+
+		checksum = be32_to_cpu(hdr.crc);
 		msg = tal_arr(ctx, u8, msglen);
 		r = pread(*gossip_store_fd, msg, msglen, *off + r);
 		if (r != msglen)
-			return NULL;
+			return tal_free(msg);
 
 		if (checksum != crc32c(be32_to_cpu(hdr.timestamp), msg, msglen))
 			status_failed(STATUS_FAIL_INTERNAL_ERROR,
@@ -102,15 +169,11 @@ u8 *gossip_store_next(const tal_t *ctx,
 			*off = *end = reopen_gossip_store(gossip_store_fd, msg);
 			msg = tal_free(msg);
 		/* Ignore gossipd internal messages. */
-		} else if (type != WIRE_CHANNEL_ANNOUNCEMENT
-			   && type != WIRE_CHANNEL_UPDATE
-			   && type != WIRE_NODE_ANNOUNCEMENT) {
-			msg = tal_free(msg);
-		} else if (!push &&
-			 !timestamp_filter(timestamp_min, timestamp_max,
-					   timestamp)) {
+		} else if (!public_msg_type(type)) {
 			msg = tal_free(msg);
 		} else if (!push && push_only) {
+			msg = tal_free(msg);
+		} else if (!with_spam && ratelimited) {
 			msg = tal_free(msg);
 		}
 	}
@@ -138,6 +201,41 @@ size_t find_gossip_store_end(int gossip_store_fd, size_t off)
 
 		off += sizeof(buf.hdr) + msglen;
 		lseek(gossip_store_fd, off, SEEK_SET);
+	}
+	return off;
+}
+
+/* Keep seeking forward until we hit something >= timestamp */
+size_t find_gossip_store_by_timestamp(int gossip_store_fd,
+				      size_t off,
+				      u32 timestamp)
+{
+	/* We cheat and read first two bytes of message too. */
+	struct {
+		struct gossip_hdr hdr;
+		be16 type;
+	} buf;
+	int r;
+
+	while ((r = pread(gossip_store_fd, &buf,
+			  sizeof(buf.hdr) + sizeof(buf.type), off))
+	       == sizeof(buf.hdr) + sizeof(buf.type)) {
+		u32 msglen = be32_to_cpu(buf.hdr.len) & GOSSIP_STORE_LEN_MASK;
+		u16 type = be16_to_cpu(buf.type);
+
+		/* Don't swallow end marker!  Reset, as they will call
+		 * gossip_store_next and reopen file. */
+		if (type == WIRE_GOSSIP_STORE_ENDED)
+			return 1;
+
+		/* Only to-be-broadcast types have valid timestamps! */
+		if (!(be32_to_cpu(buf.hdr.len) & GOSSIP_STORE_LEN_DELETED_BIT)
+		    && public_msg_type(type)
+		    && be32_to_cpu(buf.hdr.timestamp) >= timestamp) {
+			break;
+		}
+
+		off += sizeof(buf.hdr) + msglen;
 	}
 	return off;
 }

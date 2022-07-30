@@ -22,6 +22,16 @@ struct chainparams {
 	const char *bip70_name;
 	const struct bitcoin_blkid genesis_blockhash;
 	const int rpc_port;
+	/**
+	 * BOLT 1:
+	 *
+	 * The default TCP port depends on the network used. The most common networks are:
+	 *
+	 * - Bitcoin mainet with port number 9735 or the corresponding hexadecimal `0x2607`;
+	 * - Bitcoin testnet with port number 19735 (`0x4D17`);
+	 * - Bitcoin signet with port number 39735 (`0xF87`).
+	 */
+	const int ln_port;
 	const char *cli;
 	const char *cli_args;
 	/* The min numeric version of cli supported */
@@ -64,4 +74,9 @@ const struct chainparams *chainparams_by_chainhash(const struct bitcoin_blkid *c
  */
 const char *chainparams_get_network_names(const tal_t *ctx);
 
+/**
+ * chainparams_get_ln_port - Return the lightning network default port by
+ * network if the chainparams is initialized, otherwise 9735 as mock port
+ */
+int chainparams_get_ln_port(const struct chainparams *params);
 #endif /* LIGHTNING_BITCOIN_CHAINPARAMS_H */

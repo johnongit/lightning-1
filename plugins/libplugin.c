@@ -135,6 +135,24 @@ static void ld_rpc_send(struct plugin *plugin, struct json_stream *stream)
 	io_wake(plugin->io_rpc_conn);
 }
 
+
+/* When cmd for request is gone, we use this as noop callback */
+static struct command_result *ignore_cb(struct command *command,
+					const char *buf,
+					const jsmntok_t *result,
+					void *arg)
+{
+	return command_done();
+}
+
+static void disable_request_cb(struct command *cmd, struct out_req *out)
+{
+	out->errcb = NULL;
+	out->cb = ignore_cb;
+	/* Called because cmd got free'd */
+	out->cmd = NULL;
+}
+
 /* FIXME: Move lightningd/jsonrpc to common/ ? */
 
 struct out_req *
@@ -160,12 +178,17 @@ jsonrpc_request_start_(struct plugin *plugin, struct command *cmd,
 	out->arg = arg;
 	uintmap_add(&plugin->out_reqs, out->id, out);
 
+	/* If command goes away, don't call callbacks! */
+	if (out->cmd)
+		tal_add_destructor2(out->cmd, disable_request_cb, out);
+
 	out->js = new_json_stream(NULL, cmd, NULL);
 	json_object_start(out->js, NULL);
 	json_add_string(out->js, "jsonrpc", "2.0");
 	json_add_u64(out->js, "id", out->id);
 	json_add_string(out->js, "method", method);
-	json_object_start(out->js, "params");
+	if (out->errcb)
+		json_object_start(out->js, "params");
 
 	return out;
 }
@@ -177,7 +200,7 @@ const struct feature_set *plugin_feature_set(const struct plugin *p)
 
 static void jsonrpc_finish_and_send(struct plugin *p, struct json_stream *js)
 {
-	json_object_compat_end(js);
+	json_object_end(js);
 	json_stream_close(js, NULL);
 	ld_send(p, js);
 }
@@ -208,7 +231,7 @@ struct json_stream *jsonrpc_stream_fail(struct command *cmd,
 	struct json_stream *js = jsonrpc_stream_start(cmd);
 
 	json_object_start(js, "error");
-	json_add_member(js, "code", false, "%d", code);
+	json_add_primitive_fmt(js, "code", "%d", code);
 	json_add_string(js, "message", err);
 
 	return js;
@@ -228,7 +251,7 @@ static struct command_result *command_complete(struct command *cmd,
 					       struct json_stream *result)
 {
 	/* Global object */
-	json_object_compat_end(result);
+	json_object_end(result);
 	json_stream_close(result, cmd);
 	ld_send(cmd->plugin, result);
 	tal_free(cmd);
@@ -489,20 +512,18 @@ static struct json_out *start_json_request(const tal_t *ctx,
 	return jout;
 }
 
-/* Synchronous routine to send command and extract fields from response */
-void rpc_scan(struct plugin *plugin,
-	      const char *method,
-	      const struct json_out *params TAKES,
-	      const char *guide,
-	      ...)
+static const char *rpc_scan_core(const tal_t *ctx,
+				 struct plugin *plugin,
+				 const char *method,
+				 const struct json_out *params TAKES,
+				 const char *guide,
+				 va_list ap)
 {
 	bool error;
-	const char *err;
 	const jsmntok_t *contents;
 	int reqlen;
 	const char *p;
 	struct json_out *jout;
-	va_list ap;
 
 	jout = start_json_request(tmpctx, 0, method, params);
 	finish_and_send_json(plugin->rpc_conn->fd, jout);
@@ -513,15 +534,116 @@ void rpc_scan(struct plugin *plugin,
 		     method, reqlen, membuf_elems(&plugin->rpc_conn->mb));
 
 	p = membuf_consume(&plugin->rpc_conn->mb, reqlen);
+	return json_scanv(ctx, p, contents, guide, ap);
+}
+
+/* Synchronous routine to send command and extract fields from response */
+void rpc_scan(struct plugin *plugin,
+	      const char *method,
+	      const struct json_out *params TAKES,
+	      const char *guide,
+	      ...)
+{
+	const char *err;
+	va_list ap;
 
 	va_start(ap, guide);
-	err = json_scanv(tmpctx, p, contents, guide, ap);
+	err = rpc_scan_core(tmpctx, plugin, method, params, guide, ap);
 	va_end(ap);
 
 	if (err)
-		plugin_err(plugin, "Could not parse %s in reply to %s: %s: '%.*s'",
-			   guide, method, err,
-			   reqlen, membuf_elems(&plugin->rpc_conn->mb));
+		plugin_err(plugin, "Could not parse %s in reply to %s: %s",
+			   guide, method, err);
+}
+
+static void json_add_keypath(struct json_out *jout, const char *fieldname, const char *path)
+{
+	char **parts = tal_strsplit(tmpctx, path, "/", STR_EMPTY_OK);
+
+	json_out_start(jout, fieldname, '[');
+	for (size_t i = 0; parts[i]; parts++)
+		json_out_addstr(jout, NULL, parts[i]);
+	json_out_end(jout, ']');
+}
+
+static bool rpc_scan_datastore(struct plugin *plugin,
+			       const char *path,
+			       const char *hex_or_string,
+			       va_list ap)
+{
+	const char *guide;
+	struct json_out *params;
+	const char *err;
+
+	params = json_out_new(NULL);
+	json_out_start(params, NULL, '{');
+	json_add_keypath(params, "key", path);
+	json_out_end(params, '}');
+	json_out_finished(params);
+
+	guide = tal_fmt(tmpctx, "{datastore:[0:{%s:%%}]}", hex_or_string);
+	/* FIXME: Could be some other error, but that's probably a caller bug! */
+	err = rpc_scan_core(tmpctx, plugin, "listdatastore", take(params), guide, ap);
+	if (!err)
+		return true;
+	plugin_log(plugin, LOG_DBG, "listdatastore error %s: %s", path, err);
+	return false;
+}
+
+bool rpc_scan_datastore_str(struct plugin *plugin,
+			    const char *path,
+			    ...)
+{
+	bool ret;
+	va_list ap;
+
+	va_start(ap, path);
+	ret = rpc_scan_datastore(plugin, path, "string", ap);
+	va_end(ap);
+	return ret;
+}
+
+/* This variant scans the hex encoding, not the string */
+bool rpc_scan_datastore_hex(struct plugin *plugin,
+			    const char *path,
+			    ...)
+{
+	bool ret;
+	va_list ap;
+
+	va_start(ap, path);
+	ret = rpc_scan_datastore(plugin, path, "hex", ap);
+	va_end(ap);
+	return ret;
+}
+
+struct command_result *jsonrpc_set_datastore_(struct plugin *plugin,
+					      struct command *cmd,
+					      const char *path,
+					      const void *value,
+					      bool value_is_string,
+					      const char *mode,
+					      struct command_result *(*cb)(struct command *command,
+									   const char *buf,
+									   const jsmntok_t *result,
+									   void *arg),
+					      struct command_result *(*errcb)(struct command *command,
+									      const char *buf,
+									      const jsmntok_t *result,
+									      void *arg),
+					      void *arg)
+{
+	struct out_req *req;
+
+	req = jsonrpc_request_start(plugin, cmd, "datastore", cb, errcb, arg);
+
+	json_add_keypath(req->js->jout, "key", path);
+	if (value_is_string)
+		json_add_string(req->js, "string", value);
+	else
+		json_add_hex_talarr(req->js, "hex", value);
+	json_add_string(req->js, "mode", mode);
+	return send_outreq(plugin, req);
 }
 
 static void handle_rpc_reply(struct plugin *plugin, const jsmntok_t *toks)
@@ -546,21 +668,35 @@ static void handle_rpc_reply(struct plugin *plugin, const jsmntok_t *toks)
 			   json_tok_full_len(toks),
 			   json_tok_full(plugin->rpc_buffer, toks), id);
 
+	/* Remove destructor if one existed */
+	if (out->cmd)
+		tal_del_destructor2(out->cmd, disable_request_cb, out);
+
 	/* We want to free this if callback doesn't. */
 	tal_steal(tmpctx, out);
 	uintmap_del(&plugin->out_reqs, out->id);
 
 	contenttok = json_get_member(plugin->rpc_buffer, toks, "error");
-	if (contenttok)
-		res = out->errcb(out->cmd, plugin->rpc_buffer,
-				 contenttok, out->arg);
-	else {
+	if (contenttok) {
+		if (out->errcb)
+			res = out->errcb(out->cmd, plugin->rpc_buffer,
+					 contenttok, out->arg);
+		else
+			res = out->cb(out->cmd, plugin->rpc_buffer,
+				      toks, out->arg);
+	} else {
 		contenttok = json_get_member(plugin->rpc_buffer, toks, "result");
 		if (!contenttok)
 			plugin_err(plugin, "Bad JSONRPC, no 'error' nor 'result': '%.*s'",
 				   json_tok_full_len(toks),
 				   json_tok_full(plugin->rpc_buffer, toks));
-		res = out->cb(out->cmd, plugin->rpc_buffer, contenttok, out->arg);
+		/* errcb is NULL if it's a single whole-object callback */
+		if (out->errcb)
+			res = out->cb(out->cmd, plugin->rpc_buffer, contenttok,
+				      out->arg);
+		else
+			res = out->cb(out->cmd, plugin->rpc_buffer, toks,
+				      out->arg);
 	}
 
 	assert(res == &pending || res == &complete);
@@ -570,8 +706,9 @@ struct command_result *
 send_outreq(struct plugin *plugin, const struct out_req *req)
 {
 	/* The "param" object. */
+	if (req->errcb)
+		json_object_end(req->js);
 	json_object_end(req->js);
-	json_object_compat_end(req->js);
 	json_stream_close(req->js, req->cmd);
 
 	ld_rpc_send(plugin, req->js);
@@ -1151,18 +1288,26 @@ void NORETURN plugin_exit(struct plugin *p, int exitcode)
 	exit(exitcode);
 }
 
+void NORETURN plugin_errv(struct plugin *p, const char *fmt, va_list ap)
+{
+	va_list ap2;
+
+	/* In case it gets consumed, make a copy. */
+	va_copy(ap2, ap);
+
+	plugin_logv(p, LOG_BROKEN, fmt, ap);
+	vfprintf(stderr, fmt, ap2);
+	plugin_exit(p, 1);
+	va_end(ap2);
+}
+
 void NORETURN plugin_err(struct plugin *p, const char *fmt, ...)
 {
 	va_list ap;
 
 	va_start(ap, fmt);
-	plugin_logv(p, LOG_BROKEN, fmt, ap);
+	plugin_errv(p, fmt, ap);
 	va_end(ap);
-	va_start(ap, fmt);
-	vfprintf(stderr, fmt, ap);
-	fprintf(stderr, "\n");
-	va_end(ap);
-	plugin_exit(p, 1);
 }
 
 void plugin_log(struct plugin *p, enum log_level l, const char *fmt, ...)
@@ -1581,18 +1726,18 @@ static struct listpeers_channel *json_to_listpeers_channel(const tal_t *ctx,
 			*scidtok =
 			    json_get_member(buffer, tok, "short_channel_id"),
 			*dirtok = json_get_member(buffer, tok, "direction"),
-			*tmsattok =
-			    json_get_member(buffer, tok, "total_msat"),
+			*tmsattok = json_get_member(buffer, tok, "total_msat"),
 			*smsattok =
-			    json_get_member(buffer, tok, "spendable_msat");
+			    json_get_member(buffer, tok, "spendable_msat"),
+			*aliastok = json_get_member(buffer, tok, "alias");
 
 	if (privtok == NULL || privtok->type != JSMN_PRIMITIVE ||
 	    statetok == NULL || statetok->type != JSMN_STRING ||
 	    ftxidtok == NULL || ftxidtok->type != JSMN_STRING ||
 	    (scidtok != NULL && scidtok->type != JSMN_STRING) ||
 	    (dirtok != NULL && dirtok->type != JSMN_PRIMITIVE) ||
-	    tmsattok == NULL || tmsattok->type != JSMN_STRING ||
-	    smsattok == NULL || smsattok->type != JSMN_STRING)
+	    tmsattok == NULL ||
+	    smsattok == NULL)
 		return NULL;
 
 	chan = tal(ctx, struct listpeers_channel);
@@ -1603,13 +1748,40 @@ static struct listpeers_channel *json_to_listpeers_channel(const tal_t *ctx,
 	if (scidtok != NULL) {
 		assert(dirtok != NULL);
 		chan->scid = tal(chan, struct short_channel_id);
-		chan->direction = tal(chan, int);
 		json_to_short_channel_id(buffer, scidtok, chan->scid);
-		json_to_int(buffer, dirtok, chan->direction);
-	}else {
-		assert(dirtok == NULL);
+	} else {
 		chan->scid = NULL;
 		chan->direction = NULL;
+	}
+
+	if (dirtok != NULL) {
+		chan->direction = tal(chan, int);
+		json_to_int(buffer, dirtok, chan->direction);
+	} else {
+		chan->direction = NULL;
+	}
+
+	if (aliastok != NULL) {
+		const jsmntok_t *loctok =
+				    json_get_member(buffer, aliastok, "local"),
+				*remtok =
+				    json_get_member(buffer, aliastok, "remote");
+		if (loctok) {
+			chan->alias[LOCAL] = tal(chan, struct short_channel_id);
+			json_to_short_channel_id(buffer, loctok,
+						 chan->alias[LOCAL]);
+		} else
+			chan->alias[LOCAL] = NULL;
+
+		if (remtok) {
+			chan->alias[REMOTE] = tal(chan, struct short_channel_id);
+			json_to_short_channel_id(buffer, loctok,
+						 chan->alias[REMOTE]);
+		} else
+			chan->alias[REMOTE] = NULL;
+	} else {
+		chan->alias[LOCAL] = NULL;
+		chan->alias[REMOTE] = NULL;
 	}
 
 	json_to_msat(buffer, tmsattok, &chan->total_msat);

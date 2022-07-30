@@ -381,6 +381,28 @@
             "Feerates.perkw": 3,
             "Feerates.warning_missing_feerates": 1
         },
+        "FundchannelRequest": {
+            "FundChannel.amount": 1,
+            "FundChannel.announce": 3,
+            "FundChannel.close_to": 6,
+            "FundChannel.compact_lease": 8,
+            "FundChannel.feerate": 2,
+            "FundChannel.id": 9,
+            "FundChannel.minconf": 10,
+            "FundChannel.minconf[]": 4,
+            "FundChannel.mindepth": 12,
+            "FundChannel.push_msat": 5,
+            "FundChannel.request_amt": 7,
+            "FundChannel.utxos[]": 11
+        },
+        "FundchannelResponse": {
+            "FundChannel.channel_id": 4,
+            "FundChannel.close_to": 5,
+            "FundChannel.mindepth": 6,
+            "FundChannel.outnum": 3,
+            "FundChannel.tx": 1,
+            "FundChannel.txid": 2
+        },
         "FundpsbtRequest": {
             "FundPsbt.excess_as_change": 8,
             "FundPsbt.feerate": 2,
@@ -443,6 +465,7 @@
             "Getinfo.warning_lightningd_sync": 17
         },
         "GetrouteRequest": {
+            "GetRoute.amount_msat": 9,
             "GetRoute.cltv": 4,
             "GetRoute.exclude[]": 7,
             "GetRoute.fromid": 5,
@@ -464,6 +487,7 @@
             "GetRoute.route[].style": 6
         },
         "InvoiceRequest": {
+            "Invoice.amount_msat": 10,
             "Invoice.cltv": 6,
             "Invoice.deschashonly": 9,
             "Invoice.description": 2,
@@ -486,6 +510,7 @@
             "Invoice.warning_private_unused": 8
         },
         "KeysendRequest": {
+            "KeySend.amount_msat": 10,
             "KeySend.destination": 1,
             "KeySend.exemptfee": 7,
             "KeySend.extratlvs": 9,
@@ -580,6 +605,7 @@
             "ListFunds.outputs[].blockheight": 8,
             "ListFunds.outputs[].output": 2,
             "ListFunds.outputs[].redeemscript": 6,
+            "ListFunds.outputs[].reserved": 9,
             "ListFunds.outputs[].scriptpubkey": 4,
             "ListFunds.outputs[].status": 7,
             "ListFunds.outputs[].txid": 1
@@ -662,9 +688,11 @@
             "ListPeers.peers[].features": 6,
             "ListPeers.peers[].id": 1,
             "ListPeers.peers[].log[]": 3,
-            "ListPeers.peers[].netaddr[]": 5
+            "ListPeers.peers[].netaddr[]": 5,
+            "ListPeers.peers[].remote_addr": 7
         },
         "ListpeersPeersChannels": {
+            "ListPeers.peers[].channels[].alias": 50,
             "ListPeers.peers[].channels[].channel_id": 6,
             "ListPeers.peers[].channels[].close_to": 14,
             "ListPeers.peers[].channels[].close_to_addr": 47,
@@ -714,6 +742,10 @@
             "ListPeers.peers[].channels[].their_to_self_delay": 33,
             "ListPeers.peers[].channels[].to_us_msat": 20,
             "ListPeers.peers[].channels[].total_msat": 23
+        },
+        "ListpeersPeersChannelsAlias": {
+            "ListPeers.peers[].channels[].alias.local": 1,
+            "ListPeers.peers[].channels[].alias.remote": 2
         },
         "ListpeersPeersChannelsFeerate": {
             "ListPeers.peers[].channels[].feerate.perkb": 2,
@@ -805,6 +837,7 @@
             "ListTransactions.transactions[].inputs[].type": 4
         },
         "ListtransactionsTransactionsOutputs": {
+            "ListTransactions.transactions[].outputs[].amount_msat": 6,
             "ListTransactions.transactions[].outputs[].channel": 5,
             "ListTransactions.transactions[].outputs[].index": 1,
             "ListTransactions.transactions[].outputs[].msat": 2,
@@ -819,6 +852,7 @@
             "NewAddr.p2sh-segwit": 2
         },
         "PayRequest": {
+            "Pay.amount_msat": 13,
             "Pay.bolt11": 1,
             "Pay.description": 12,
             "Pay.exclude": 10,
@@ -857,6 +891,7 @@
             "SendOnion.first_hop.id": 1
         },
         "SendonionRequest": {
+            "SendOnion.amount_msat": 12,
             "SendOnion.bolt11": 7,
             "SendOnion.destination": 9,
             "SendOnion.first_hop": 2,
@@ -885,6 +920,7 @@
             "SendOnion.status": 3
         },
         "SendpayRequest": {
+            "SendPay.amount_msat": 10,
             "SendPay.bolt11": 5,
             "SendPay.groupid": 9,
             "SendPay.label": 3,
@@ -912,6 +948,7 @@
             "SendPay.status": 4
         },
         "SendpayRoute": {
+            "SendPay.route[].amount_msat": 5,
             "SendPay.route[].channel": 4,
             "SendPay.route[].delay": 3,
             "SendPay.route[].id": 2,

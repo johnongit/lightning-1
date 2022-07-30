@@ -53,18 +53,14 @@ struct peer {
 	/* Connection to the peer */
 	struct io_conn *to_peer;
 
+	/* Counter to distinguish this connection from the next re-connection */
+	u64 counter;
+
+	/* Is this draining?  If so, just keep writing until queue empty */
+	bool draining;
+
 	/* Connections to the subdaemons */
 	struct subd **subds;
-
-	/* Final message to send to peer (and hangup) */
-	u8 *final_msg;
-
-	/* Set once lightningd says it's OK to close (subd tells it
-	 * it's done). */
-	bool ready_to_die;
-
-	/* Has this ever been active?  (i.e. ever had a subd attached?) */
-	bool active;
 
 	/* When socket has Nagle overridden */
 	bool urgent;
@@ -86,6 +82,9 @@ struct peer {
 
 	/* Random ping timer, to detect dead connections. */
 	struct oneshot *ping_timer;
+
+	/* Last time we received traffic */
+	struct timeabs last_recv_time;
 
 #if DEVELOPER
 	bool dev_read_enabled;
@@ -134,6 +133,9 @@ struct daemon {
 	/* pubkey equivalent. */
 	struct pubkey mykey;
 
+	/* Counter from which we derive connection identifiers. */
+	u64 connection_counter;
+
 	/* Base for timeout timers, and how long to wait for init msg */
 	struct timers timers;
 	u32 timeout_secs;
@@ -172,9 +174,6 @@ struct daemon {
 	/* File descriptors to listen on once we're activated. */
 	const struct listen_fd **listen_fds;
 
-	/* Allow to define the default behavior of tor services calls*/
-	bool use_v3_autotor;
-
 	/* Our features, as lightningd told us */
 	struct feature_set *our_features;
 
@@ -187,6 +186,8 @@ struct daemon {
 	/* The gossip_store */
 	int gossip_store_fd;
 	size_t gossip_store_end;
+	u32 gossip_recent_time;
+	size_t gossip_store_recent_off;
 
 	/* We only announce websocket addresses if !deprecated_apis */
 	bool announce_websocket;
@@ -217,7 +218,7 @@ struct io_plan *peer_connected(struct io_conn *conn,
 			       const u8 *their_features TAKES,
 			       bool incoming);
 
-/* Called when peer->peer_conn is finally freed */
-void peer_conn_closed(struct peer *peer);
+/* Removes peer from hash table, tells gossipd and lightningd. */
+void destroy_peer(struct peer *peer);
 
 #endif /* LIGHTNING_CONNECTD_CONNECTD_H */

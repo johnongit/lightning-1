@@ -20,7 +20,6 @@
 #include <common/billboard.h>
 #include <common/blockheight_states.h>
 #include <common/channel_type.h>
-#include <common/gossip_rcvd_filter.h>
 #include <common/gossip_store.h>
 #include <common/initial_channel.h>
 #include <common/lease_rates.h>
@@ -1133,8 +1132,9 @@ static u8 *handle_funding_locked(struct state *state, u8 *msg)
 {
 	struct channel_id cid;
 	struct pubkey remote_per_commit;
+	struct tlv_funding_locked_tlvs *tlvs;
 
-	if (!fromwire_funding_locked(msg, &cid, &remote_per_commit))
+	if (!fromwire_funding_locked(tmpctx, msg, &cid, &remote_per_commit, &tlvs))
 		open_err_fatal(state, "Bad funding_locked %s",
 			       tal_hex(msg, msg));
 
@@ -2914,6 +2914,8 @@ static void opener_start(struct state *state, u8 *msg)
 		tx_state->lease_chan_max_ppt
 			= rates->channel_fee_max_proportional_thousandths;
 	}
+	/* Keep memleak detector happy! */
+	tal_free(expected_rates);
 
 	/* Check that total funding doesn't overflow */
 	if (!amount_sat_add(&total, tx_state->opener_funding,
@@ -3393,13 +3395,12 @@ static void send_funding_locked(struct state *state)
 {
 	u8 *msg;
 	struct pubkey next_local_per_commit;
-
+	struct tlv_funding_locked_tlvs *tlvs = tlv_funding_locked_tlvs_new(tmpctx);
 	/* Figure out the next local commit */
 	hsm_per_commitment_point(1, &next_local_per_commit);
 
-	msg = towire_funding_locked(NULL,
-				    &state->channel_id,
-				    &next_local_per_commit);
+	msg = towire_funding_locked(NULL, &state->channel_id,
+				    &next_local_per_commit, tlvs);
 	peer_write(state->pps, take(msg));
 
 	state->funding_locked[LOCAL] = true;
@@ -3532,7 +3533,7 @@ static void do_reconnect_dance(struct state *state)
 	struct pubkey remote_current_per_commit_point;
 	struct tx_state *tx_state = state->tx_state;
 #if EXPERIMENTAL_FEATURES
-	struct tlv_channel_reestablish_tlvs *tlvs = tlv_channel_reestablish_tlvs_new(NULL);
+	struct tlv_channel_reestablish_tlvs *tlvs;
 #endif
 
 	/* BOLT #2:
@@ -3549,7 +3550,7 @@ static void do_reconnect_dance(struct state *state)
 		 &last_remote_per_commit_secret,
 		 &state->first_per_commitment_point[LOCAL]
 #if EXPERIMENTAL_FEATURES
-		 , tlvs
+		 , NULL
 #endif
 			);
 	peer_write(state->pps, take(msg));

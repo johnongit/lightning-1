@@ -18,7 +18,11 @@ be of the form *id@host* or *id@host:port*. In this case, the *host* and
 
 *host* is the peer's hostname or IP address.
 
-If not specified, the *port* defaults to 9735.
+If not specified, the *port* depends on the current network:
+- bitcoin **mainnet**: 9735.
+- bitcoin **testnet**: 19735.
+- bitcoin **signet**: 39735.
+- bitcoin **regtest**: 19846.
 
 If *host* is not specified (or doesn't work), the connection will be attempted to an IP
 belonging to *id* obtained through gossip with other already connected
@@ -46,7 +50,7 @@ RETURN VALUE
 [comment]: # (GENERATE-FROM-SCHEMA-START)
 On success, an object is returned, containing:
 - **id** (pubkey): the peer we connected to
-- **features** (hex): BOLT 9 features bitmap offered by peer in init message (globalfeatures and features combined)
+- **features** (hex): BOLT 9 features bitmap offered by peer
 - **direction** (string): Whether they initiated connection or we did (one of "in", "out")
 - **address** (object): Address information (mainly useful if **direction** is *out*):
   - **type** (string): Type of connection (*torv2*/*torv3* only if **direction** is *out*) (one of "local socket", "ipv4", "ipv6", "torv2", "torv3")
@@ -72,6 +76,10 @@ will contain details about the failures:
 
     { "code" : 401, "message" : "..." }
 
+If the peer disconnected while we were connecting:
+
+    { "code" : 402, "message" : "..." }
+
 If the given parameters are wrong:
 
     { "code" : -32602, "message" : "..." }
@@ -93,4 +101,4 @@ RESOURCES
 
 Main web site: <https://github.com/ElementsProject/lightning>
 
-[comment]: # ( SHA256STAMP:540ce22f5d912b59732b8b2659e4a950d1344eb926901e26476a246d9eb473b8)
+[comment]: # ( SHA256STAMP:ad52e3b3042a8910c106e0730d9d54d09ebdd3cffdb6ba3fd776f8ec4be57e46)

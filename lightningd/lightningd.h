@@ -62,9 +62,6 @@ struct config {
 	/* Minimal amount of effective funding_satoshis for accepting channels */
 	u64 min_capacity_sat;
 
-	/* Allow to define the default behavior of tor services calls*/
-	bool use_v3_autotor;
-
 	/* This is the key we use to encrypt `hsm_secret`. */
 	struct secret *keypass;
 
@@ -113,7 +110,7 @@ struct lightningd {
 	struct log_book *log_book;
 	/* Log for general stuff. */
 	struct log *log;
-	const char *logfile;
+	const char **logfiles;
 
 	/* This is us. */
 	struct node_id id;
@@ -246,6 +243,9 @@ struct lightningd {
 	/* Speedup gossip propagation, for testing. */
 	bool dev_fast_gossip;
 	bool dev_fast_gossip_prune;
+
+	/* Speedup reconnect delay, for testing. */
+	bool dev_fast_reconnect;
 
 	/* This is the forced private key for the node. */
 	struct privkey *dev_force_privkey;
