@@ -463,6 +463,7 @@ static bool handle_version(struct subd *sd, const u8 *msg)
 			   ver, version());
 		sd->ld->try_reexec = true;
 		/* Return us to toplevel lightningd.c */
+		log_debug(sd->ld->log, "io_break: %s", __func__);
 		io_break(sd->ld);
 		return false;
 	}
@@ -741,7 +742,7 @@ static struct subd *new_subd(const tal_t *ctx,
 		       &msg_fd,
 		       /* We only turn on subdaemon io logging if we're going
 			* to print it: too stressful otherwise! */
-		       log_print_level(sd->log) < LOG_DBG,
+		       log_print_level(sd->log, node_id) < LOG_DBG,
 		       ap);
 	if (sd->pid == (pid_t)-1) {
 		log_unusual(ld->log, "subd %s failed: %s",
@@ -835,7 +836,8 @@ void subd_send_msg(struct subd *sd, const u8 *msg_out)
 	u16 type = fromwire_peektype(msg_out);
 	/* FIXME: We should use unique upper bits for each daemon, then
 	 * have generate-wire.py add them, just assert here. */
-	assert(!strstarts(sd->msgname(type), "INVALID"));
+	if (strstarts(sd->msgname(type), "INVALID"))
+		fatal("Sending %s an invalid message %s", sd->name, tal_hex(tmpctx, msg_out));
 	msg_enqueue(sd->outq, msg_out);
 }
 

@@ -836,10 +836,15 @@ static struct peer *wallet_peer_load(struct wallet *w, const u64 dbid)
 
 	db_col_node_id(stmt, "node_id", &id);
 
+	/* This can happen for peers last seen on Torv2! */
 	addrstr = db_col_strdup(tmpctx, stmt, "address");
-	if (!parse_wireaddr_internal(addrstr, &addr, DEFAULT_PORT,
-				     false, false, true, true, NULL))
-		goto done;
+	if (!parse_wireaddr_internal(addrstr, &addr, chainparams_get_ln_port(chainparams),
+				     false, false, true, true, NULL)) {
+		log_unusual(w->log, "Unparsable peer address %s: replacing",
+			    addrstr);
+		parse_wireaddr_internal("127.0.0.1:1", &addr, chainparams_get_ln_port(chainparams),
+					false, false, true, true, NULL);
+	}
 
 	/* FIXME: save incoming in db! */
 	peer = new_peer(w->ld, db_col_u64(stmt, "id"), &id, &addr, false);
@@ -1109,6 +1114,7 @@ wallet_stmt2inflight(struct wallet *w, struct db_stmt *stmt,
 	struct amount_msat lease_fee;
 	struct bitcoin_outpoint funding;
 	struct bitcoin_signature last_sig;
+	struct bitcoin_tx *last_tx;
 	struct channel_inflight *inflight;
 
 	secp256k1_ecdsa_signature *lease_commit_sig;
@@ -1144,12 +1150,19 @@ wallet_stmt2inflight(struct wallet *w, struct db_stmt *stmt,
 		db_col_ignore(stmt, "lease_fee");
 	}
 
+	/* last_tx is null for stub channels used for recovering funds through
+	 * Static channel backups. */
+	if (!db_col_is_null(stmt, "last_tx"))
+		last_tx = db_col_psbt_to_tx(tmpctx, stmt, "last_tx");
+	else
+		last_tx = NULL;
+
 	inflight = new_inflight(chan, &funding,
 				db_col_int(stmt, "funding_feerate"),
 				funding_sat,
 				our_funding_sat,
 				db_col_psbt(tmpctx, stmt, "funding_psbt"),
-				db_col_psbt_to_tx(tmpctx, stmt, "last_tx"),
+				last_tx,
 				last_sig,
 				db_col_int(stmt, "lease_expiry"),
 				lease_commit_sig,
@@ -1245,7 +1258,7 @@ static struct channel *wallet_stmt2channel(struct wallet *w, struct db_stmt *stm
 	struct channel_info channel_info;
 	struct fee_states *fee_states;
 	struct height_states *height_states;
-	struct short_channel_id *scid;
+	struct short_channel_id *scid, *alias[NUM_SIDES];
 	struct channel_id cid;
 	struct channel *chan;
 	u64 peer_dbid;
@@ -1255,6 +1268,7 @@ static struct channel *wallet_stmt2channel(struct wallet *w, struct db_stmt *stm
 	struct bitcoin_outpoint funding;
 	struct bitcoin_outpoint *shutdown_wrong_funding;
 	struct bitcoin_signature last_sig;
+	struct bitcoin_tx *last_tx;
 	u8 *remote_shutdown_scriptpubkey;
 	u8 *local_shutdown_scriptpubkey;
 	struct changed_htlc *last_sent_commit;
@@ -1284,6 +1298,20 @@ static struct channel *wallet_stmt2channel(struct wallet *w, struct db_stmt *stm
 			return NULL;
 	} else {
 		scid = NULL;
+	}
+
+	if (!db_col_is_null(stmt, "alias_local")) {
+		alias[LOCAL] = tal(tmpctx, struct short_channel_id);
+		alias[LOCAL]->u64 = db_col_u64(stmt, "alias_local");
+	} else {
+		alias[LOCAL] = NULL;
+	}
+
+	if (!db_col_is_null(stmt, "alias_remote")) {
+		alias[REMOTE] = tal(tmpctx, struct short_channel_id);
+		alias[REMOTE]->u64 = db_col_u64(stmt, "alias_remote");
+	} else {
+		alias[REMOTE] = NULL;
 	}
 
 	ok &= wallet_shachain_load(w, db_col_u64(stmt, "shachain_remote_id"),
@@ -1426,6 +1454,13 @@ static struct channel *wallet_stmt2channel(struct wallet *w, struct db_stmt *stm
 	else
 		type = channel_type_none(NULL);
 
+	/* last_tx is null for stub channels used for recovering funds through
+	 * Static channel backups. */
+	if (!db_col_is_null(stmt, "last_tx"))
+		last_tx = db_col_psbt_to_tx(tmpctx, stmt, "last_tx");
+	else
+		last_tx = NULL;
+
 	chan = new_channel(peer, db_col_u64(stmt, "id"),
 			   &wshachain,
 			   db_col_int(stmt, "state"),
@@ -1444,11 +1479,13 @@ static struct channel *wallet_stmt2channel(struct wallet *w, struct db_stmt *stm
 			   our_funding_sat,
 			   db_col_int(stmt, "funding_locked_remote") != 0,
 			   scid,
+			   alias[LOCAL],
+			   alias[REMOTE],
 			   &cid,
 			   our_msat,
 			   msat_to_us_min, /* msatoshi_to_us_min */
 			   msat_to_us_max, /* msatoshi_to_us_max */
-			   db_col_psbt_to_tx(tmpctx, stmt, "last_tx"),
+			   last_tx,
 			   &last_sig,
 			   wallet_htlc_sigs_load(tmpctx, w,
 						 db_col_u64(stmt, "id"),
@@ -1463,8 +1500,6 @@ static struct channel *wallet_stmt2channel(struct wallet *w, struct db_stmt *stm
 			   db_col_u64(stmt, "first_blocknum"),
 			   db_col_int(stmt, "min_possible_feerate"),
 			   db_col_int(stmt, "max_possible_feerate"),
-			   /* Not connected */
-			   false,
 			   &local_basepoints, &local_funding_pubkey,
 			   future_per_commitment_point,
 			   db_col_int(stmt, "feerate_base"),
@@ -1578,6 +1613,8 @@ static bool wallet_channels_load_active(struct wallet *w)
 					", lease_chan_max_ppt"
 					", htlc_minimum_msat"
 					", htlc_maximum_msat"
+					", alias_local"
+					", alias_remote"
 					" FROM channels"
                                         " WHERE state != ?;")); //? 0
 	db_bind_int(stmt, 0, CLOSED);
@@ -1859,8 +1896,10 @@ void wallet_channel_save(struct wallet *w, struct channel *chan)
 					"  lease_chan_max_msat=?," // 40
 					"  lease_chan_max_ppt=?," // 41
 					"  htlc_minimum_msat=?," // 42
-					"  htlc_maximum_msat=?" // 43
-					" WHERE id=?")); // 44
+					"  htlc_maximum_msat=?," // 43
+					"  alias_local=?," // 44
+					"  alias_remote=?" // 45
+					" WHERE id=?")); // 46
 	db_bind_u64(stmt, 0, chan->their_shachain.id);
 	if (chan->scid)
 		db_bind_short_channel_id(stmt, 1, chan->scid);
@@ -1889,7 +1928,10 @@ void wallet_channel_save(struct wallet *w, struct channel *chan)
 	db_bind_talarr(stmt, 17, chan->shutdown_scriptpubkey[REMOTE]);
 	db_bind_u64(stmt, 18, chan->final_key_idx);
 	db_bind_u64(stmt, 19, chan->our_config.id);
-	db_bind_psbt(stmt, 20, chan->last_tx->psbt);
+	if (chan->last_tx)
+		db_bind_psbt(stmt, 20, chan->last_tx->psbt);
+	else
+		db_bind_null(stmt, 20);
 	db_bind_signature(stmt, 21, &chan->last_sig.s);
 	db_bind_int(stmt, 22, chan->last_was_revoke);
 	db_bind_int(stmt, 23, chan->min_possible_feerate);
@@ -1925,7 +1967,18 @@ void wallet_channel_save(struct wallet *w, struct channel *chan)
 	}
 	db_bind_amount_msat(stmt, 42, &chan->htlc_minimum_msat);
 	db_bind_amount_msat(stmt, 43, &chan->htlc_maximum_msat);
-	db_bind_u64(stmt, 44, chan->dbid);
+
+	if (chan->alias[LOCAL] != NULL)
+		db_bind_u64(stmt, 44, chan->alias[LOCAL]->u64);
+	else
+		db_bind_null(stmt, 44);
+
+	if (chan->alias[REMOTE] != NULL)
+		db_bind_u64(stmt, 45, chan->alias[REMOTE]->u64);
+	else
+		db_bind_null(stmt, 45);
+
+	db_bind_u64(stmt, 46, chan->dbid);
 	db_exec_prepared_v2(take(stmt));
 
 	wallet_channel_config_save(w, &chan->channel_info.their_config);
@@ -3590,7 +3643,7 @@ void wallet_htlc_sigs_save(struct wallet *w, u64 channel_id,
 	}
 }
 
-bool wallet_network_check(struct wallet *w)
+bool wallet_sanity_check(struct wallet *w)
 {
 	struct bitcoin_blkid chainhash;
 	struct db_stmt *stmt = db_prepare_v2(
@@ -3621,6 +3674,34 @@ bool wallet_network_check(struct wallet *w)
 		stmt = db_prepare_v2(w->db, SQL("INSERT INTO vars (name, blobval) "
 						"VALUES ('genesis_hash', ?);"));
 		db_bind_sha256d(stmt, 0, &chainparams->genesis_blockhash.shad);
+		db_exec_prepared_v2(take(stmt));
+	}
+
+	stmt = db_prepare_v2(w->db,
+			     SQL("SELECT blobval FROM vars WHERE name='node_id'"));
+	db_query_prepared(stmt);
+
+	if (db_step(stmt)) {
+		struct node_id id;
+		db_col_node_id(stmt, "blobval", &id);
+		tal_free(stmt);
+
+		if (!node_id_eq(&id, &w->ld->id)) {
+			log_broken(w->log, "Wallet node_id does not "
+					   "match HSM: %s "
+					   "!= %s. "
+					   "Did your hsm_secret change?",
+				   type_to_string(tmpctx, struct node_id, &id),
+				   type_to_string(tmpctx, struct node_id,
+						  &w->ld->id));
+			return false;
+		}
+	} else {
+		tal_free(stmt);
+		/* Still a pristine wallet, claim it for the node_id we are now */
+		stmt = db_prepare_v2(w->db, SQL("INSERT INTO vars (name, blobval) "
+						"VALUES ('node_id', ?);"));
+		db_bind_node_id(stmt, 0, &w->ld->id);
 		db_exec_prepared_v2(take(stmt));
 	}
 	return true;
@@ -4116,9 +4197,10 @@ struct txlocator *wallet_transaction_locate(const tal_t *ctx, struct wallet *w,
 		return NULL;
 	}
 
-	if (db_col_is_null(stmt, "blockheight"))
+	if (db_col_is_null(stmt, "blockheight")) {
+		db_col_ignore(stmt, "txindex");
 		loc = NULL;
-	else {
+	} else {
 		loc = tal(ctx, struct txlocator);
 		loc->blkheight = db_col_int(stmt, "blockheight");
 		loc->index = db_col_int(stmt, "txindex");
@@ -4325,22 +4407,33 @@ void wallet_forwarded_payment_add(struct wallet *w, const struct htlc_in *in,
 				 ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);"));
 	db_bind_u64(stmt, 0, in->dbid);
 
-	if (out) {
-		db_bind_u64(stmt, 1, out->dbid);
-		db_bind_u64(stmt, 3, out->key.channel->scid->u64);
-		db_bind_amount_msat(stmt, 5, &out->msat);
-	} else {
-		/* FORWARD_LOCAL_FAILED may occur before we get htlc_out */
-		assert(failcode != 0);
-		assert(state == FORWARD_LOCAL_FAILED);
-		db_bind_null(stmt, 1);
-		db_bind_null(stmt, 3);
-		db_bind_null(stmt, 5);
+	/* FORWARD_LOCAL_FAILED may occur before we get htlc_out */
+	if (!out || !scid_out) {
+ 		assert(failcode != 0);
+ 		assert(state == FORWARD_LOCAL_FAILED);
 	}
 
-	db_bind_u64(stmt, 2, in->key.channel->scid->u64);
+	if (out)
+		db_bind_u64(stmt, 1, out->dbid);
+	else
+		db_bind_null(stmt, 1);
 
+	/* We use the LOCAL alias, since that's under our control, and
+	 * we keep it stable, whereas the REMOTE alias is likely what
+	 * the sender used to specify the channel, but that's under
+	 * control of the remote end. */
+	assert(in->key.channel->scid != NULL || in->key.channel->alias[LOCAL]);
+	db_bind_u64(stmt, 2, channel_scid_or_local_alias(in->key.channel)->u64);
+
+	if (scid_out)
+		db_bind_u64(stmt, 3, scid_out->u64);
+	else
+		db_bind_null(stmt, 3);
 	db_bind_amount_msat(stmt, 4, &in->msat);
+	if (out)
+		db_bind_amount_msat(stmt, 5, &out->msat);
+	else
+		db_bind_null(stmt, 5);
 
 	db_bind_int(stmt, 6, wallet_forward_status_in_db(state));
 	db_bind_timeabs(stmt, 7, in->received_time);

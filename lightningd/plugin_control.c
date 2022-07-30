@@ -1,9 +1,9 @@
 #include "config.h"
+#include <ccan/tal/path/path.h>
 #include <ccan/tal/str/str.h>
 #include <common/json_command.h>
-#include <common/json_tok.h>
+#include <common/json_param.h>
 #include <common/memleak.h>
-#include <common/param.h>
 #include <common/timeout.h>
 #include <errno.h>
 #include <lightningd/notification.h>
@@ -33,6 +33,7 @@ static struct command_result *plugin_dynamic_list_plugins(struct plugin_command 
 		json_add_string(response, "name", p->cmd);
 		json_add_bool(response, "active",
 		              p->plugin_state == INIT_COMPLETE);
+		json_add_bool(response, "dynamic", p->dynamic);
 		json_object_end(response);
 	}
 	json_array_end(response);
@@ -70,8 +71,8 @@ plugin_dynamic_start(struct plugin_command *pcmd, const char *plugin_path,
 
 	if (!p)
 		return command_fail(pcmd->cmd, JSONRPC2_INVALID_PARAMS,
-				    "%s: already registered",
-				    plugin_path);
+				    "%s: %s", plugin_path,
+					    errno ? strerror(errno) : "already registered");
 
 	/* This will come back via plugin_cmd_killed or plugin_cmd_succeeded */
 	err = plugin_send_getmanifest(p);
@@ -256,6 +257,9 @@ static struct command_result *json_plugin_control(struct command *cmd,
 					json_get_member(buffer, mod_params,
 							"plugin") - 1, 1);
 		}
+		if (access(plugin_path, X_OK) != 0)
+			plugin_path = path_join(cmd,
+					cmd->ld->plugins->default_dir, plugin_path);
 		if (access(plugin_path, X_OK) == 0)
 			return plugin_dynamic_start(pcmd, plugin_path,
 						    buffer, mod_params);

@@ -10,6 +10,7 @@
 *.rej
 *.pyc
 *.tmp
+libccan.a
 .cppcheck-suppress
 .mypy_cache
 TAGS
@@ -33,6 +34,8 @@ monkeytype.sqlite3
 !*/test/run-*.c
 */test/exp-run-*
 !*/test/exp-run-*.c
+*/*/test/run-*
+!*/*/test/run-*.c
 test/test_protocol
 test/test_sphinx
 tests/.pytest.restart
@@ -60,6 +63,10 @@ doc/lightning*.[1578]
 *_wiregen.[ch]
 *_printgen.[ch]
 *_gettextgen.po
+tests/node_pb2.py
+tests/node_pb2_grpc.py
+tests/primitives_pb2.py
+tests/primitives_pb2_grpc.py
 
 # Ignore unrelated stuff
 .DS_Store
@@ -67,4 +74,4 @@ doc/lightning*.[1578]
 
 # Rust targets
 target
-Cargo.lock
+plugins/cln-grpc

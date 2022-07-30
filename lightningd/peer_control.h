@@ -6,7 +6,7 @@
 #include <ccan/list/list.h>
 #include <common/channel_config.h>
 #include <common/htlc.h>
-#include <common/json.h>
+#include <common/json_parse.h>
 #include <common/node_id.h>
 #include <common/wireaddr.h>
 #include <wallet/wallet.h>
@@ -27,11 +27,26 @@ struct peer {
 	/* ID of peer */
 	struct node_id id;
 
+	/* Connection counter from connectd. */
+	u64 connectd_counter;
+
+	/* Last reconnect: if it's recent, we delay by reconnect_delay,
+	 * doubling each time. */
+	struct timeabs last_connect_attempt;
+	u32 reconnect_delay;
+
 	/* Our channels */
 	struct list_head channels;
 
 	/* Are we connected? */
-	bool is_connected;
+	enum {
+		/* Connectd said we're connecting, we called hooks... */
+		PEER_CONNECTING,
+		/* Hooks succeeded, we're connected. */
+		PEER_CONNECTED,
+		/* Start state, also connectd told us we're disconnected */
+		PEER_DISCONNECTED,
+	} connected;
 
 	/* Our (only) uncommitted channel, still opening. */
 	struct uncommitted_channel *uncommitted_channel;
@@ -39,6 +54,9 @@ struct peer {
 	/* Where we connected to, or it connected from. */
 	struct wireaddr_internal addr;
 	bool connected_incoming;
+
+	/* They send what they see as our address as remote_addr */
+	struct wireaddr *remote_addr;
 
 	/* We keep a copy of their feature bits */
 	const u8 *their_features;
@@ -67,9 +85,10 @@ struct peer *peer_from_json(struct lightningd *ld,
 			    const char *buffer,
 			    const jsmntok_t *peeridtok);
 
+/* connectd tells us what peer is doing */
 void peer_connected(struct lightningd *ld, const u8 *msg);
 void peer_disconnect_done(struct lightningd *ld, const u8 *msg);
-void peer_active(struct lightningd *ld, const u8 *msg, int peer_fd);
+void peer_spoke(struct lightningd *ld, const u8 *msg);
 
 /* Could be configurable. */
 #define OUR_CHANNEL_FLAGS CHANNEL_FLAGS_ANNOUNCE_CHANNEL
@@ -85,6 +104,9 @@ u8 *p2wpkh_for_keyidx(const tal_t *ctx, struct lightningd *ld, u64 keyidx);
 
 /* We've loaded peers from database, set them going. */
 void setup_peers(struct lightningd *ld);
+
+/* At startup, re-send any transactions we want bitcoind to have */
+void resend_closing_transactions(struct lightningd *ld);
 
 void drop_to_chain(struct lightningd *ld, struct channel *channel, bool cooperative);
 
@@ -117,5 +139,8 @@ struct command_result *
 command_find_channel(struct command *cmd,
 		     const char *buffer, const jsmntok_t *tok,
 		     struct channel **channel);
+
+/* Ancient (0.7.0 and before) releases could create invalid commitment txs! */
+bool invalid_last_tx(const struct bitcoin_tx *tx);
 
 #endif /* LIGHTNING_LIGHTNINGD_PEER_CONTROL_H */

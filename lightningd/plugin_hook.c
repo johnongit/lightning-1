@@ -1,5 +1,6 @@
 #include "config.h"
 #include <ccan/io/io.h>
+#include <common/json_parse.h>
 #include <common/memleak.h>
 #include <db/exec.h>
 #include <db/utils.h>
@@ -303,7 +304,10 @@ static void db_hook_response(const char *buffer, const jsmntok_t *toks,
 	resulttok = json_get_member(buffer, toks, "result");
 	if (!resulttok)
 		fatal("Plugin '%s' returned an invalid response to the "
-		      "db_write hook: %s", dwh_req->plugin->cmd, buffer);
+		      "db_write hook: %.*s",
+		      dwh_req->plugin->cmd,
+		      json_tok_full_len(toks),
+		      json_tok_full(buffer, toks));
 
 	/* We expect result: { 'result' : 'continue' }.
 	 * Anything else we abort.
@@ -311,14 +315,16 @@ static void db_hook_response(const char *buffer, const jsmntok_t *toks,
 	resulttok = json_get_member(buffer, resulttok, "result");
 	if (resulttok) {
 		if (!json_tok_streq(buffer, resulttok, "continue"))
-			fatal("Plugin '%s' returned failed db_write: %s.",
+			fatal("Plugin '%s' returned failed db_write: %.*s.",
 			      dwh_req->plugin->cmd,
-			      buffer);
+			      json_tok_full_len(toks),
+			      json_tok_full(buffer, toks));
 	} else
 		fatal("Plugin '%s' returned an invalid result to the db_write "
-		      "hook: %s",
+		      "hook: %.*s",
 		      dwh_req->plugin->cmd,
-		      buffer);
+		      json_tok_full_len(toks),
+		      json_tok_full(buffer, toks));
 
 	assert((*dwh_req->num_hooks) != 0);
 	--(*dwh_req->num_hooks);
@@ -327,6 +333,7 @@ static void db_hook_response(const char *buffer, const jsmntok_t *toks,
 		return;
 
 	/* We're done, exit exclusive loop. */
+	log_debug(dwh_req->plugin->plugins->ld->log, "io_break: %s", __func__);
 	io_break(dwh_req->ph_req);
 }
 
@@ -387,6 +394,7 @@ void plugin_hook_db_sync(struct db *db)
 	if (ret != ph_req) {
 		void *ret2 = plugins_exclusive_loop(plugins);
 		assert(ret2 == ph_req);
+		log_debug(plugins[0]->plugins->ld->log, "io_break: %s", __func__);
 		io_break(ret);
 	}
 	assert(num_hooks == 0);

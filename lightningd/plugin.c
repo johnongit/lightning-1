@@ -12,7 +12,6 @@
 #include <common/configdir.h>
 #include <common/features.h>
 #include <common/json_command.h>
-#include <common/json_helpers.h>
 #include <common/memleak.h>
 #include <common/timeout.h>
 #include <common/version.h>
@@ -159,9 +158,10 @@ static void check_plugins_manifests(struct plugins *plugins)
 	}
 
 	/* As startup, we break out once all getmanifest are returned */
-	if (plugins->startup)
+	if (plugins->startup) {
+		log_debug(plugins->ld->log, "io_break: %s", __func__);
 		io_break(plugins);
-	else
+	} else
 		/* Otherwise we go straight into configuring them */
 		plugins_config(plugins);
 }
@@ -214,8 +214,10 @@ static void destroy_plugin(struct plugin *p)
 	/* Daemon shutdown overrules plugin's importance; aborts init checks */
 	if (p->plugins->ld->state == LD_STATE_SHUTDOWN) {
 		/* But return if this was the last plugin! */
-		if (list_empty(&p->plugins->plugins))
+		if (list_empty(&p->plugins->plugins)) {
+			log_debug(p->plugins->ld->log, "io_break: %s", __func__);
 			io_break(destroy_plugin);
+		}
 		return;
 	}
 
@@ -250,11 +252,16 @@ struct plugin *plugin_register(struct plugins *plugins, const char* path TAKES,
 			       const jsmntok_t *params STEALS)
 {
 	struct plugin *p, *p_temp;
+	char* abspath;
 	u32 chksum;
 
+	abspath = path_canon(tmpctx, path);
+	if (!abspath) {
+		return NULL;
+	}
 	/* Don't register an already registered plugin */
 	list_for_each(&plugins->plugins, p_temp, list) {
-		if (streq(path, p_temp->cmd)) {
+		if (streq(abspath, p_temp->cmd)) {
 			/* If added as "important", upgrade to "important".  */
 			if (important)
 				p_temp->important = true;
@@ -273,7 +280,7 @@ struct plugin *plugin_register(struct plugins *plugins, const char* path TAKES,
 
 	p = tal(plugins, struct plugin);
 	p->plugins = plugins;
-	p->cmd = tal_strdup(p, path);
+	p->cmd = tal_steal(p, abspath);
 	p->checksum = file_checksum(plugins->ld, p->cmd);
 	p->shortname = path_basename(p, p->cmd);
 	p->start_cmd = start_cmd;
@@ -635,6 +642,11 @@ static const char *plugin_read_json_one(struct plugin *plugin,
 		return NULL;
 	}
 
+	if (plugin->toks->type != JSMN_OBJECT)
+		return tal_fmt(
+		    plugin,
+		    "JSON-RPC message is not a valid JSON object type");
+
 	jrtok = json_get_member(plugin->buffer, plugin->toks, "jsonrpc");
 	idtok = json_get_member(plugin->buffer, plugin->toks, "id");
 
@@ -878,10 +890,24 @@ char *plugin_opt_set(const char *arg, struct plugin_opt *popt)
 	return NULL;
 }
 
+/* Returns true if "name" was already registered and now overwritten. */
+static bool plugin_opt_register(struct plugin_opt *popt)
+{
+	bool was_registered = opt_unregister(popt->name);
+	if (streq(popt->type, "flag"))
+		opt_register_noarg(popt->name, plugin_opt_flag_set, popt,
+				   popt->description);
+	else
+		opt_register_arg(popt->name, plugin_opt_set, NULL, popt,
+				 popt->description);
+
+	return was_registered;
+}
+
 static void destroy_plugin_opt(struct plugin_opt *opt)
 {
-	if (!opt_unregister(opt->name))
-		fatal("Could not unregister %s", opt->name);
+	/* does nothing when "name" registration replaced its double */
+	opt_unregister(opt->name);
 	list_del(&opt->list);
 }
 
@@ -909,7 +935,12 @@ static const char *plugin_opt_add(struct plugin *plugin, const char *buffer,
 
 	popt->name = tal_fmt(popt, "--%.*s", nametok->end - nametok->start,
 			     buffer + nametok->start);
-	popt->description = NULL;
+
+	/* an "|" alias could circumvent the unique-option-name check */
+	if (strchr(popt->name, '|'))
+		return tal_fmt(plugin, "Option \"name\" may not contain '|'");
+
+	popt->description = json_strdup(popt, buffer, desctok);
 	if (deptok) {
 		if (!json_to_bool(buffer, deptok, &popt->deprecated))
 			return tal_fmt(plugin,
@@ -950,7 +981,7 @@ static const char *plugin_opt_add(struct plugin *plugin, const char *buffer,
 			       "Only \"string\", \"int\", \"bool\", and \"flag\" options are supported");
 	}
 
-	if (defaulttok) {
+	if (defaulttok && !json_tok_is_null(buffer, defaulttok)) {
 		popt->def = plugin_opt_value(popt, popt->type,
 					     json_strdup(tmpctx, buffer, defaulttok));
 		if (!popt->def)
@@ -960,18 +991,13 @@ static const char *plugin_opt_add(struct plugin *plugin, const char *buffer,
 				       popt->type);
 	}
 
-	if (!popt->description)
-		popt->description = json_strdup(popt, buffer, desctok);
 
 	list_add_tail(&plugin->plugin_opts, &popt->list);
 
-	if (streq(popt->type, "flag"))
-		opt_register_noarg(popt->name, plugin_opt_flag_set, popt,
-				   popt->description);
-
-	else
-		opt_register_arg(popt->name, plugin_opt_set, NULL, popt,
-				 popt->description);
+	/* Command line options are parsed only during ld's startup and each "name"
+	 * only once. Always registers to satisfy destructor */
+	if (plugin_opt_register(popt) && plugin->plugins->startup)
+		fatal("error starting plugin '%s': option name '%s' is already taken", plugin->cmd, popt->name);
 
 	tal_add_destructor(popt, destroy_plugin_opt);
 	return NULL;
@@ -1508,7 +1534,8 @@ static const char *plugin_parse_getmanifest_response(const char *buffer,
 	if (!err)
 		err = plugin_add_params(plugin);
 
-	plugin->plugin_state = NEEDS_INIT;
+	if (!err)
+		plugin->plugin_state = NEEDS_INIT;
 	return err;
 }
 
@@ -1761,8 +1788,12 @@ void plugins_init(struct plugins *plugins)
 	setenv("LIGHTNINGD_PLUGIN", "1", 1);
 	setenv("LIGHTNINGD_VERSION", version(), 1);
 
-	if (plugins_send_getmanifest(plugins))
-		io_loop_with_timers(plugins->ld);
+	if (plugins_send_getmanifest(plugins)) {
+		void *ret;
+		ret = io_loop_with_timers(plugins->ld);
+		log_debug(plugins->ld->log, "io_loop_with_timers: %s", __func__);
+		assert(ret == plugins);
+	}
 }
 
 static void plugin_config_cb(const char *buffer,
@@ -1853,7 +1884,7 @@ plugin_populate_init_request(struct plugin *plugin, struct jsonrpc_request *req)
 	json_add_string(req->stream, "network", chainparams->network_name);
 	if (ld->proxyaddr) {
 		json_add_address(req->stream, "proxy", ld->proxyaddr);
-		json_add_bool(req->stream, "torv3-enabled", ld->config.use_v3_autotor);
+		json_add_bool(req->stream, "torv3-enabled", true);
 		json_add_bool(req->stream, "always_use_proxy", ld->always_use_proxy);
 		if (deprecated_apis)
 			json_add_bool(req->stream, "use_proxy_always",
@@ -1952,7 +1983,8 @@ void json_add_opt_plugins_array(struct json_stream *response,
 							    opt->type,
 							    opt->values[0]);
 				} else {
-					json_add_null(response, opt_name);
+					if (deprecated_apis)
+						json_add_null(response, opt_name);
 				}
 			}
 			json_object_end(response);
@@ -2057,6 +2089,7 @@ void *plugins_exclusive_loop(struct plugin **plugins)
 
 	/* We don't service timers here, either! */
 	ret = io_loop(NULL, NULL);
+	log_debug(plugins[0]->plugins->ld->log, "io_loop: %s", __func__);
 
 	for (i = 0; i < tal_count(plugins); ++i) {
 		io_conn_out_exclusive(plugins[i]->stdin_conn, false);

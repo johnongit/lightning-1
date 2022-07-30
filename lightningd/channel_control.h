@@ -10,7 +10,7 @@ struct lightningd;
 struct peer_fd;
 struct peer;
 
-void peer_start_channeld(struct channel *channel,
+bool peer_start_channeld(struct channel *channel,
 			 struct peer_fd *peer_fd,
 			 const u8 *fwd_msg,
 			 bool reconnected,
@@ -35,7 +35,7 @@ bool channel_on_funding_locked(struct channel *channel,
 			       struct pubkey *next_per_commitment_point);
 
 /* Record channel open (coin movement notifications) */
-void channel_record_open(struct channel *channel);
+void channel_record_open(struct channel *channel, u32 blockheight, bool record_push);
 
 /* A channel has unrecoverably fallen behind */
 void channel_fallen_behind(struct channel *channel, const u8 *msg);

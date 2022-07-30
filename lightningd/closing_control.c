@@ -12,13 +12,12 @@
 #include <common/fee_states.h>
 #include <common/initial_commit_tx.h>
 #include <common/json_command.h>
-#include <common/json_helpers.h>
-#include <common/json_tok.h>
-#include <common/param.h>
+#include <common/json_param.h>
 #include <common/shutdown_scriptpubkey.h>
 #include <common/timeout.h>
 #include <common/type_to_string.h>
 #include <common/utils.h>
+#include <connectd/connectd_wiregen.h>
 #include <errno.h>
 #include <gossipd/gossipd_wiregen.h>
 #include <hsmd/capabilities.h>
@@ -29,7 +28,6 @@
 #include <lightningd/closing_control.h>
 #include <lightningd/dual_open_control.h>
 #include <lightningd/hsm_control.h>
-#include <lightningd/json.h>
 #include <lightningd/jsonrpc.h>
 #include <lightningd/lightningd.h>
 #include <lightningd/log.h>
@@ -55,12 +53,13 @@ static void
 resolve_one_close_command(struct close_command *cc, bool cooperative)
 {
 	struct json_stream *result = json_stream_success(cc->cmd);
-	struct bitcoin_txid txid;
-
-	bitcoin_txid(cc->channel->last_tx, &txid);
 
 	json_add_tx(result, "tx", cc->channel->last_tx);
-	json_add_txid(result, "txid", &txid);
+	if (!invalid_last_tx(cc->channel->last_tx)) {
+		struct bitcoin_txid txid;
+		bitcoin_txid(cc->channel->last_tx, &txid);
+		json_add_txid(result, "txid", &txid);
+	}
 	if (cooperative)
 		json_add_string(result, "type", "mutual");
 	else
@@ -379,8 +378,10 @@ void peer_start_closingd(struct channel *channel, struct peer_fd *peer_fd)
 	if (!channel->owner) {
 		log_broken(channel->log, "Could not subdaemon closing: %s",
 			    strerror(errno));
-		channel_fail_reconnect_later(channel,
-					     "Failed to subdaemon closing");
+		/* Disconnect it. */
+		subd_send_msg(ld->connectd,
+			      take(towire_connectd_discard_peer(NULL, &channel->peer->id,
+								channel->peer->connectd_counter)));
 		return;
 	}
 
@@ -544,13 +545,65 @@ static struct command_result *param_feerate_range(struct command *cmd,
 	return NULL;
 }
 
+/* Only one of these will be set! */
+struct some_channel {
+	struct channel *channel;
+	struct channel *unsaved_channel;
+	struct uncommitted_channel *uc;
+};
+
+static struct command_result *param_channel_or_peer(struct command *cmd,
+						    const char *name,
+						    const char *buffer,
+						    const jsmntok_t *tok,
+						    struct some_channel **sc)
+{
+	struct peer *peer = peer_from_json(cmd->ld, buffer, tok);
+	bool more_than_one;
+
+	(*sc)->unsaved_channel = NULL;
+	(*sc)->uc = NULL;
+
+	if (peer) {
+		(*sc)->channel = peer_any_active_channel(peer, &more_than_one);
+		if ((*sc)->channel) {
+			if (more_than_one)
+				goto more_than_one;
+			return NULL;
+		}
+	} else {
+		struct command_result *res;
+		res = command_find_channel(cmd, buffer, tok, &(*sc)->channel);
+		if (res)
+			return res;
+		assert((*sc)->channel);
+		return NULL;
+	}
+
+	/* OK, we have a peer, but no active channels. */
+	(*sc)->uc = peer->uncommitted_channel;
+	if ((*sc)->uc)
+		return NULL;
+
+	(*sc)->unsaved_channel = peer_any_unsaved_channel(peer, &more_than_one);
+	if ((*sc)->unsaved_channel) {
+		if (more_than_one)
+			goto more_than_one;
+		return NULL;
+	}
+
+	return command_fail(cmd, LIGHTNINGD, "Peer has no active channel");
+
+more_than_one:
+	return command_fail(cmd, LIGHTNINGD,
+			    "Peer has multiple channels: use channel_id or short_channel_id");
+}
+
 static struct command_result *json_close(struct command *cmd,
 					 const char *buffer,
 					 const jsmntok_t *obj UNNEEDED,
 					 const jsmntok_t *params)
 {
-	const jsmntok_t *idtok;
-	struct peer *peer;
 	struct channel *channel;
 	unsigned int *timeout;
 	const u8 *close_to_script = NULL;
@@ -562,9 +615,10 @@ static struct command_result *json_close(struct command *cmd,
 	u32 *feerate_range;
 	char* end;
 	bool anysegwit;
+	struct some_channel *sc = talz(tmpctx, struct some_channel);
 
 	if (!param(cmd, buffer, params,
-		   p_req("id", param_tok, &idtok),
+		   p_req("id", param_channel_or_peer, &sc),
 		   p_opt_def("unilateraltimeout", param_number, &timeout,
 			     48 * 3600),
 		   p_opt("destination", param_bitcoin_address, &close_to_script),
@@ -577,44 +631,22 @@ static struct command_result *json_close(struct command *cmd,
 		   NULL))
 		return command_param_failed();
 
-	peer = peer_from_json(cmd->ld, buffer, idtok);
-	if (peer) {
-		bool more_than_one;
-		channel = peer_any_active_channel(peer, &more_than_one);
-		if (channel && more_than_one) {
-			return command_fail(cmd, LIGHTNINGD,
-					    "Peer has multiple channels: use channel_id or short_channel_id");
-		}
-	} else {
-		struct command_result *res;
-		res = command_find_channel(cmd, buffer, idtok, &channel);
-		if (res)
-			return res;
+	/* Easy cases: peer can simply be forgotten. */
+	if (sc->uc) {
+		kill_uncommitted_channel(sc->uc, "close command called");
+		goto discard_unopened;
 	}
 
-	if (!channel && peer) {
-		bool more_than_one;
-		struct uncommitted_channel *uc = peer->uncommitted_channel;
-		if (uc) {
-			/* Easy case: peer can simply be forgotten. */
-			kill_uncommitted_channel(uc, "close command called");
-			goto discard_unopened;
-		}
-		channel = peer_any_unsaved_channel(peer, &more_than_one);
-		if (channel) {
-			if (more_than_one) {
-				return command_fail(cmd, LIGHTNINGD,
-						    "Peer has multiple channels: use channel_id or short_channel_id");
-			}
-			channel_unsaved_close_conn(channel,
-						   "close command called");
-			goto discard_unopened;
-		}
-		return command_fail(cmd, LIGHTNINGD,
-				    "Peer has no active channel");
+	if (sc->unsaved_channel) {
+		channel_unsaved_close_conn(sc->unsaved_channel,
+					   "close command called");
+		goto discard_unopened;
 	}
 
-	if (!*force_lease_close && channel->opener != LOCAL
+	channel = sc->channel;
+	assert(channel);
+
+	if (!*force_lease_close && sc->channel->opener != LOCAL
 	    && get_block_height(cmd->ld->topology) < channel->lease_expiry)
 		return command_fail(cmd, LIGHTNINGD,
 				    "Peer leased this channel from us, we"

@@ -2,7 +2,7 @@
 
 echo "Running in $(pwd)"
 export ARCH=${ARCH:-64}
-export BOLTDIR=lightning-rfc
+export BOLTDIR=bolts
 export CC=${COMPILER:-gcc}
 export COMPAT=${COMPAT:-1}
 export TEST_CHECK_DBSTMTS=${TEST_CHECK_DBSTMTS:-0}
@@ -21,11 +21,14 @@ export VALGRIND=${VALGRIND:-0}
 export FUZZING=${FUZZING:-0}
 export LIGHTNINGD_POSTGRES_NO_VACUUM=1
 
+# Fail if any commands fail.
+set -e
+
 pip3 install --user poetry
 poetry config virtualenvs.create false --local
 poetry install
 
-git clone https://github.com/lightningnetwork/lightning-rfc.git ../lightning-rfc
+git clone https://github.com/lightning/bolts.git ../${BOLTDIR}
 git submodule update --init --recursive
 
 ./configure CC="$CC"
@@ -33,7 +36,7 @@ cat config.vars
 
 cat << EOF > pytest.ini
 [pytest]
-addopts=-p no:logging --color=yes --timeout=1800 --timeout-method=thread --test-group-random-seed=42 --force-flaky --no-success-flaky-report --max-runs=3
+addopts=-p no:logging --color=yes --timeout=1800 --timeout-method=thread --test-group-random-seed=42
 markers =
     slow_test: marks tests as slow (deselect with '-m "not slow_test"')
 EOF
@@ -89,7 +92,7 @@ then
 
     ./configure CC="$TARGET_HOST-gcc" --enable-static
 
-    make -j32 CC="$TARGET_HOST-gcc" > /dev/null
+    make -s -j32 CC="$TARGET_HOST-gcc"
 else
     eatmydata make -j32
     # shellcheck disable=SC2086

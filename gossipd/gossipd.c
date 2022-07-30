@@ -300,8 +300,8 @@ static void handle_local_channel_announcement(struct daemon *daemon, const u8 *m
 	/* We treat it OK even if peer has disconnected since (unlikely though!) */
 	peer = find_peer(daemon, &id);
 	if (!peer)
-		status_broken("Unknown peer %s for local_channel_announcement",
-			      type_to_string(tmpctx, struct node_id, &id));
+		status_debug("Unknown peer %s for local_channel_announcement",
+			     type_to_string(tmpctx, struct node_id, &id));
 
 	err = handle_channel_announcement_msg(daemon, peer, cannouncement);
 	if (err) {
@@ -350,8 +350,8 @@ static void handle_remote_addr(struct daemon *daemon, const u8 *msg)
 	if (!fromwire_gossipd_remote_addr(msg, &remote_addr))
 		master_badmsg(WIRE_GOSSIPD_REMOTE_ADDR, msg);
 
-	/* current best guess is that we use DEFAULT_PORT on public internet */
-	remote_addr.port = DEFAULT_PORT;
+	/* Best guess is that we use default port for the selected network */
+	remote_addr.port = chainparams_get_ln_port(chainparams);
 
 	switch (remote_addr.type) {
 	case ADDR_TYPE_IPV4:

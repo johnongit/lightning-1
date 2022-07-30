@@ -25,7 +25,7 @@ pub enum Request {
 	AutoCleanInvoice(requests::AutocleaninvoiceRequest),
 	CheckMessage(requests::CheckmessageRequest),
 	Close(requests::CloseRequest),
-	ConnectPeer(requests::ConnectRequest),
+	Connect(requests::ConnectRequest),
 	CreateInvoice(requests::CreateinvoiceRequest),
 	Datastore(requests::DatastoreRequest),
 	CreateOnion(requests::CreateonionRequest),
@@ -55,11 +55,13 @@ pub enum Request {
 	TxSend(requests::TxsendRequest),
 	Disconnect(requests::DisconnectRequest),
 	Feerates(requests::FeeratesRequest),
+	FundChannel(requests::FundchannelRequest),
 	GetRoute(requests::GetrouteRequest),
 	ListForwards(requests::ListforwardsRequest),
 	ListPays(requests::ListpaysRequest),
 	Ping(requests::PingRequest),
 	SignMessage(requests::SignmessageRequest),
+	Stop(requests::StopRequest),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -75,7 +77,7 @@ pub enum Response {
 	AutoCleanInvoice(responses::AutocleaninvoiceResponse),
 	CheckMessage(responses::CheckmessageResponse),
 	Close(responses::CloseResponse),
-	ConnectPeer(responses::ConnectResponse),
+	Connect(responses::ConnectResponse),
 	CreateInvoice(responses::CreateinvoiceResponse),
 	Datastore(responses::DatastoreResponse),
 	CreateOnion(responses::CreateonionResponse),
@@ -105,11 +107,13 @@ pub enum Response {
 	TxSend(responses::TxsendResponse),
 	Disconnect(responses::DisconnectResponse),
 	Feerates(responses::FeeratesResponse),
+	FundChannel(responses::FundchannelResponse),
 	GetRoute(responses::GetrouteResponse),
 	ListForwards(responses::ListforwardsResponse),
 	ListPays(responses::ListpaysResponse),
 	Ping(responses::PingResponse),
 	SignMessage(responses::SignmessageResponse),
+	Stop(responses::StopResponse),
 }
 
 pub mod requests {
@@ -138,8 +142,8 @@ pub mod requests {
 
 	#[derive(Clone, Debug, Deserialize, Serialize)]
 	pub struct SendpayRoute {
-	    #[serde(alias = "msatoshi")]
-	    pub msatoshi: Amount,
+	    #[serde(alias = "amount_msat")]
+	    pub amount_msat: Amount,
 	    #[serde(alias = "id")]
 	    pub id: Pubkey,
 	    #[serde(alias = "delay")]
@@ -156,8 +160,8 @@ pub mod requests {
 	    pub payment_hash: Sha256,
 	    #[serde(alias = "label", skip_serializing_if = "Option::is_none")]
 	    pub label: Option<String>,
-	    #[serde(alias = "msatoshi", skip_serializing_if = "Option::is_none")]
-	    pub msatoshi: Option<Amount>,
+	    #[serde(alias = "amount_msat", skip_serializing_if = "Option::is_none")]
+	    pub amount_msat: Option<Amount>,
 	    #[serde(alias = "bolt11", skip_serializing_if = "Option::is_none")]
 	    pub bolt11: Option<String>,
 	    #[serde(alias = "payment_secret", skip_serializing_if = "Option::is_none")]
@@ -218,7 +222,7 @@ pub mod requests {
 	    pub wrong_funding: Option<String>,
 	    #[serde(alias = "force_lease_closed", skip_serializing_if = "Option::is_none")]
 	    pub force_lease_closed: Option<bool>,
-	    #[serde(alias = "feerange", skip_serializing_if = "Option::is_none")]
+	    #[serde(alias = "feerange", skip_serializing_if = "crate::is_none_or_empty")]
 	    pub feerange: Option<Vec<Feerate>>,
 	}
 
@@ -351,15 +355,15 @@ pub mod requests {
 
 	#[derive(Clone, Debug, Deserialize, Serialize)]
 	pub struct InvoiceRequest {
-	    #[serde(alias = "msatoshi")]
-	    pub msatoshi: AmountOrAny,
+	    #[serde(alias = "amount_msat")]
+	    pub amount_msat: AmountOrAny,
 	    #[serde(alias = "description")]
 	    pub description: String,
 	    #[serde(alias = "label")]
 	    pub label: String,
 	    #[serde(alias = "expiry", skip_serializing_if = "Option::is_none")]
 	    pub expiry: Option<u64>,
-	    #[serde(alias = "fallbacks", skip_serializing_if = "Option::is_none")]
+	    #[serde(alias = "fallbacks", skip_serializing_if = "crate::is_none_or_empty")]
 	    pub fallbacks: Option<Vec<String>>,
 	    #[serde(alias = "preimage", skip_serializing_if = "Option::is_none")]
 	    pub preimage: Option<String>,
@@ -373,7 +377,7 @@ pub mod requests {
 
 	#[derive(Clone, Debug, Deserialize, Serialize)]
 	pub struct ListdatastoreRequest {
-	    #[serde(alias = "key", skip_serializing_if = "Option::is_none")]
+	    #[serde(alias = "key", skip_serializing_if = "crate::is_none_or_empty")]
 	    pub key: Option<Vec<String>>,
 	}
 
@@ -407,14 +411,14 @@ pub mod requests {
 	    pub payment_hash: Sha256,
 	    #[serde(alias = "label", skip_serializing_if = "Option::is_none")]
 	    pub label: Option<String>,
-	    #[serde(alias = "shared_secrets", skip_serializing_if = "Option::is_none")]
+	    #[serde(alias = "shared_secrets", skip_serializing_if = "crate::is_none_or_empty")]
 	    pub shared_secrets: Option<Vec<Secret>>,
 	    #[serde(alias = "partid", skip_serializing_if = "Option::is_none")]
 	    pub partid: Option<u16>,
 	    #[serde(alias = "bolt11", skip_serializing_if = "Option::is_none")]
 	    pub bolt11: Option<String>,
-	    #[serde(alias = "msatoshi", skip_serializing_if = "Option::is_none")]
-	    pub msatoshi: Option<Amount>,
+	    #[serde(alias = "amount_msat", skip_serializing_if = "Option::is_none")]
+	    pub amount_msat: Option<Amount>,
 	    #[serde(alias = "destination", skip_serializing_if = "Option::is_none")]
 	    pub destination: Option<Pubkey>,
 	    #[serde(alias = "localofferid", skip_serializing_if = "Option::is_none")]
@@ -462,8 +466,8 @@ pub mod requests {
 	pub struct PayRequest {
 	    #[serde(alias = "bolt11")]
 	    pub bolt11: String,
-	    #[serde(alias = "msatoshi", skip_serializing_if = "Option::is_none")]
-	    pub msatoshi: Option<Amount>,
+	    #[serde(alias = "amount_msat", skip_serializing_if = "Option::is_none")]
+	    pub amount_msat: Option<Amount>,
 	    #[serde(alias = "label", skip_serializing_if = "Option::is_none")]
 	    pub label: Option<String>,
 	    #[serde(alias = "riskfactor", skip_serializing_if = "Option::is_none")]
@@ -478,7 +482,7 @@ pub mod requests {
 	    pub exemptfee: Option<Amount>,
 	    #[serde(alias = "localofferid", skip_serializing_if = "Option::is_none")]
 	    pub localofferid: Option<String>,
-	    #[serde(alias = "exclude", skip_serializing_if = "Option::is_none")]
+	    #[serde(alias = "exclude", skip_serializing_if = "crate::is_none_or_empty")]
 	    pub exclude: Option<Vec<String>>,
 	    #[serde(alias = "maxfee", skip_serializing_if = "Option::is_none")]
 	    pub maxfee: Option<Amount>,
@@ -555,7 +559,7 @@ pub mod requests {
 	    pub feerate: Option<Feerate>,
 	    #[serde(alias = "minconf", skip_serializing_if = "Option::is_none")]
 	    pub minconf: Option<u16>,
-	    #[serde(alias = "utxos", skip_serializing_if = "Option::is_none")]
+	    #[serde(alias = "utxos", skip_serializing_if = "crate::is_none_or_empty")]
 	    pub utxos: Option<Vec<Outpoint>>,
 	}
 
@@ -567,8 +571,8 @@ pub mod requests {
 	pub struct KeysendRequest {
 	    #[serde(alias = "destination")]
 	    pub destination: Pubkey,
-	    #[serde(alias = "msatoshi")]
-	    pub msatoshi: Amount,
+	    #[serde(alias = "amount_msat")]
+	    pub amount_msat: Amount,
 	    #[serde(alias = "label", skip_serializing_if = "Option::is_none")]
 	    pub label: Option<String>,
 	    #[serde(alias = "maxfeepercent", skip_serializing_if = "Option::is_none")]
@@ -615,7 +619,7 @@ pub mod requests {
 	pub struct SignpsbtRequest {
 	    #[serde(alias = "psbt")]
 	    pub psbt: String,
-	    #[serde(alias = "signonly", skip_serializing_if = "Option::is_none")]
+	    #[serde(alias = "signonly", skip_serializing_if = "crate::is_none_or_empty")]
 	    pub signonly: Option<Vec<u32>>,
 	}
 
@@ -655,7 +659,7 @@ pub mod requests {
 	    pub feerate: Option<Feerate>,
 	    #[serde(alias = "minconf", skip_serializing_if = "Option::is_none")]
 	    pub minconf: Option<u32>,
-	    #[serde(alias = "utxos", skip_serializing_if = "Option::is_none")]
+	    #[serde(alias = "utxos", skip_serializing_if = "crate::is_none_or_empty")]
 	    pub utxos: Option<Vec<Outpoint>>,
 	}
 
@@ -699,11 +703,37 @@ pub mod requests {
 	}
 
 	#[derive(Clone, Debug, Deserialize, Serialize)]
+	pub struct FundchannelRequest {
+	    #[serde(alias = "id")]
+	    pub id: Pubkey,
+	    #[serde(alias = "amount")]
+	    pub amount: AmountOrAll,
+	    #[serde(alias = "feerate", skip_serializing_if = "Option::is_none")]
+	    pub feerate: Option<Feerate>,
+	    #[serde(alias = "announce", skip_serializing_if = "Option::is_none")]
+	    pub announce: Option<bool>,
+	    #[serde(alias = "minconf", skip_serializing_if = "Option::is_none")]
+	    pub minconf: Option<u32>,
+	    #[serde(alias = "push_msat", skip_serializing_if = "Option::is_none")]
+	    pub push_msat: Option<Amount>,
+	    #[serde(alias = "close_to", skip_serializing_if = "Option::is_none")]
+	    pub close_to: Option<String>,
+	    #[serde(alias = "request_amt", skip_serializing_if = "Option::is_none")]
+	    pub request_amt: Option<Amount>,
+	    #[serde(alias = "compact_lease", skip_serializing_if = "Option::is_none")]
+	    pub compact_lease: Option<String>,
+	    #[serde(alias = "utxos", skip_serializing_if = "crate::is_none_or_empty")]
+	    pub utxos: Option<Vec<Outpoint>>,
+	    #[serde(alias = "mindepth", skip_serializing_if = "Option::is_none")]
+	    pub mindepth: Option<u32>,
+	}
+
+	#[derive(Clone, Debug, Deserialize, Serialize)]
 	pub struct GetrouteRequest {
 	    #[serde(alias = "id")]
 	    pub id: Pubkey,
-	    #[serde(alias = "msatoshi")]
-	    pub msatoshi: Amount,
+	    #[serde(alias = "amount_msat")]
+	    pub amount_msat: Amount,
 	    #[serde(alias = "riskfactor")]
 	    pub riskfactor: u64,
 	    #[serde(alias = "cltv", skip_serializing_if = "Option::is_none")]
@@ -712,7 +742,7 @@ pub mod requests {
 	    pub fromid: Option<Pubkey>,
 	    #[serde(alias = "fuzzpercent", skip_serializing_if = "Option::is_none")]
 	    pub fuzzpercent: Option<u32>,
-	    #[serde(alias = "exclude", skip_serializing_if = "Option::is_none")]
+	    #[serde(alias = "exclude", skip_serializing_if = "crate::is_none_or_empty")]
 	    pub exclude: Option<Vec<String>>,
 	    #[serde(alias = "maxhops", skip_serializing_if = "Option::is_none")]
 	    pub maxhops: Option<u32>,
@@ -797,6 +827,10 @@ pub mod requests {
 	pub struct SignmessageRequest {
 	    #[serde(alias = "message")]
 	    pub message: String,
+	}
+
+	#[derive(Clone, Debug, Deserialize, Serialize)]
+	pub struct StopRequest {
 	}
 
 }
@@ -929,9 +963,9 @@ pub mod responses {
 	    pub network: String,
 	    #[serde(alias = "fees_collected_msat")]
 	    pub fees_collected_msat: Amount,
-	    #[serde(alias = "address", skip_serializing_if = "Option::is_none")]
+	    #[serde(alias = "address", skip_serializing_if = "crate::is_none_or_empty")]
 	    pub address: Option<Vec<GetinfoAddress>>,
-	    #[serde(alias = "binding", skip_serializing_if = "Option::is_none")]
+	    #[serde(alias = "binding", skip_serializing_if = "crate::is_none_or_empty")]
 	    pub binding: Option<Vec<GetinfoBinding>>,
 	    #[serde(alias = "warning_bitcoind_sync", skip_serializing_if = "Option::is_none")]
 	    pub warning_bitcoind_sync: Option<String>,
@@ -1072,6 +1106,14 @@ pub mod responses {
 	}
 
 	#[derive(Clone, Debug, Deserialize, Serialize)]
+	pub struct ListpeersPeersChannelsAlias {
+	    #[serde(alias = "local", skip_serializing_if = "Option::is_none")]
+	    pub local: Option<ShortChannelId>,
+	    #[serde(alias = "remote", skip_serializing_if = "Option::is_none")]
+	    pub remote: Option<ShortChannelId>,
+	}
+
+	#[derive(Clone, Debug, Deserialize, Serialize)]
 	pub struct ListpeersPeersChannelsState_changes {
 	    #[serde(alias = "timestamp")]
 	    pub timestamp: String,
@@ -1151,7 +1193,7 @@ pub mod responses {
 	    pub next_feerate: Option<String>,
 	    #[serde(alias = "next_fee_step", skip_serializing_if = "Option::is_none")]
 	    pub next_fee_step: Option<u32>,
-	    #[serde(alias = "inflight", skip_serializing_if = "Option::is_none")]
+	    #[serde(alias = "inflight", skip_serializing_if = "crate::is_none_or_empty")]
 	    pub inflight: Option<Vec<ListpeersPeersChannelsInflight>>,
 	    #[serde(alias = "close_to", skip_serializing_if = "Option::is_none")]
 	    pub close_to: Option<String>,
@@ -1160,6 +1202,8 @@ pub mod responses {
 	    // Path `ListPeers.peers[].channels[].opener`
 	    #[serde(rename = "opener")]
 	    pub opener: ChannelSide,
+	    #[serde(skip_serializing_if = "Option::is_none")]
+	    pub closer: Option<ChannelSide>,
 	    #[serde(alias = "features")]
 	    pub features: Vec<String>,
 	    #[serde(alias = "to_us_msat", skip_serializing_if = "Option::is_none")]
@@ -1198,9 +1242,9 @@ pub mod responses {
 	    pub our_to_self_delay: Option<u32>,
 	    #[serde(alias = "max_accepted_htlcs", skip_serializing_if = "Option::is_none")]
 	    pub max_accepted_htlcs: Option<u32>,
-	    #[serde(alias = "state_changes", skip_serializing_if = "Option::is_none")]
+	    #[serde(alias = "state_changes", skip_serializing_if = "crate::is_none_or_empty")]
 	    pub state_changes: Option<Vec<ListpeersPeersChannelsState_changes>>,
-	    #[serde(alias = "status", skip_serializing_if = "Option::is_none")]
+	    #[serde(alias = "status", skip_serializing_if = "crate::is_none_or_empty")]
 	    pub status: Option<Vec<String>>,
 	    #[serde(alias = "in_payments_offered", skip_serializing_if = "Option::is_none")]
 	    pub in_payments_offered: Option<u64>,
@@ -1218,7 +1262,7 @@ pub mod responses {
 	    pub out_payments_fulfilled: Option<u64>,
 	    #[serde(alias = "out_fulfilled_msat", skip_serializing_if = "Option::is_none")]
 	    pub out_fulfilled_msat: Option<Amount>,
-	    #[serde(alias = "htlcs", skip_serializing_if = "Option::is_none")]
+	    #[serde(alias = "htlcs", skip_serializing_if = "crate::is_none_or_empty")]
 	    pub htlcs: Option<Vec<ListpeersPeersChannelsHtlcs>>,
 	    #[serde(alias = "close_to_addr", skip_serializing_if = "Option::is_none")]
 	    pub close_to_addr: Option<String>,
@@ -1230,12 +1274,14 @@ pub mod responses {
 	    pub id: Pubkey,
 	    #[serde(alias = "connected")]
 	    pub connected: bool,
-	    #[serde(alias = "log", skip_serializing_if = "Option::is_none")]
+	    #[serde(alias = "log", skip_serializing_if = "crate::is_none_or_empty")]
 	    pub log: Option<Vec<ListpeersPeersLog>>,
 	    #[serde(alias = "channels")]
 	    pub channels: Vec<ListpeersPeersChannels>,
-	    #[serde(alias = "netaddr", skip_serializing_if = "Option::is_none")]
+	    #[serde(alias = "netaddr", skip_serializing_if = "crate::is_none_or_empty")]
 	    pub netaddr: Option<Vec<String>>,
+	    #[serde(alias = "remote_addr", skip_serializing_if = "Option::is_none")]
+	    pub remote_addr: Option<String>,
 	    #[serde(alias = "features", skip_serializing_if = "Option::is_none")]
 	    pub features: Option<String>,
 	}
@@ -1284,6 +1330,8 @@ pub mod responses {
 	    // Path `ListFunds.outputs[].status`
 	    #[serde(rename = "status")]
 	    pub status: ListfundsOutputsStatus,
+	    #[serde(alias = "reserved")]
+	    pub reserved: bool,
 	    #[serde(alias = "blockheight", skip_serializing_if = "Option::is_none")]
 	    pub blockheight: Option<u32>,
 	}
@@ -1427,8 +1475,8 @@ pub mod responses {
 	pub struct CheckmessageResponse {
 	    #[serde(alias = "verified")]
 	    pub verified: bool,
-	    #[serde(alias = "pubkey", skip_serializing_if = "Option::is_none")]
-	    pub pubkey: Option<Pubkey>,
+	    #[serde(alias = "pubkey")]
+	    pub pubkey: Pubkey,
 	}
 
 	/// Whether we successfully negotiated a mutual close, closed without them, or discarded not-yet-opened channel
@@ -1995,8 +2043,8 @@ pub mod responses {
 	pub struct ListtransactionsTransactionsOutputs {
 	    #[serde(alias = "index")]
 	    pub index: u32,
-	    #[serde(alias = "msat")]
-	    pub msat: Amount,
+	    #[serde(alias = "amount_msat")]
+	    pub amount_msat: Amount,
 	    #[serde(alias = "scriptPubKey")]
 	    pub script_pub_key: String,
 	    #[serde(skip_serializing_if = "Option::is_none")]
@@ -2132,7 +2180,7 @@ pub mod responses {
 	    pub color: Option<String>,
 	    #[serde(alias = "features", skip_serializing_if = "Option::is_none")]
 	    pub features: Option<String>,
-	    #[serde(alias = "addresses", skip_serializing_if = "Option::is_none")]
+	    #[serde(alias = "addresses", skip_serializing_if = "crate::is_none_or_empty")]
 	    pub addresses: Option<Vec<ListnodesNodesAddresses>>,
 	}
 
@@ -2368,7 +2416,7 @@ pub mod responses {
 	    pub excess_msat: Amount,
 	    #[serde(alias = "change_outnum", skip_serializing_if = "Option::is_none")]
 	    pub change_outnum: Option<u32>,
-	    #[serde(alias = "reservations", skip_serializing_if = "Option::is_none")]
+	    #[serde(alias = "reservations", skip_serializing_if = "crate::is_none_or_empty")]
 	    pub reservations: Option<Vec<FundpsbtReservations>>,
 	}
 
@@ -2412,7 +2460,7 @@ pub mod responses {
 	    pub excess_msat: Amount,
 	    #[serde(alias = "change_outnum", skip_serializing_if = "Option::is_none")]
 	    pub change_outnum: Option<u32>,
-	    #[serde(alias = "reservations", skip_serializing_if = "Option::is_none")]
+	    #[serde(alias = "reservations", skip_serializing_if = "crate::is_none_or_empty")]
 	    pub reservations: Option<Vec<UtxopsbtReservations>>,
 	}
 
@@ -2506,6 +2554,22 @@ pub mod responses {
 	pub struct FeeratesResponse {
 	    #[serde(alias = "warning_missing_feerates", skip_serializing_if = "Option::is_none")]
 	    pub warning_missing_feerates: Option<String>,
+	}
+
+	#[derive(Clone, Debug, Deserialize, Serialize)]
+	pub struct FundchannelResponse {
+	    #[serde(alias = "tx")]
+	    pub tx: String,
+	    #[serde(alias = "txid")]
+	    pub txid: String,
+	    #[serde(alias = "outnum")]
+	    pub outnum: u32,
+	    #[serde(alias = "channel_id")]
+	    pub channel_id: String,
+	    #[serde(alias = "close_to", skip_serializing_if = "Option::is_none")]
+	    pub close_to: Option<String>,
+	    #[serde(alias = "mindepth", skip_serializing_if = "Option::is_none")]
+	    pub mindepth: Option<u32>,
 	}
 
 	/// The features understood by the destination node
@@ -2689,6 +2753,10 @@ pub mod responses {
 	    pub recid: String,
 	    #[serde(alias = "zbase")]
 	    pub zbase: String,
+	}
+
+	#[derive(Clone, Debug, Deserialize, Serialize)]
+	pub struct StopResponse {
 	}
 
 }

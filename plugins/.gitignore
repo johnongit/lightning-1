@@ -1,5 +1,6 @@
 autoclean
 bcli
+bookkeeper
 fetchinvoice
 fundchannel
 funder
@@ -10,3 +11,5 @@ pay
 spenderp
 topology
 txprepare
+chanbackup
+commando

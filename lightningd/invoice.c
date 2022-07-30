@@ -9,11 +9,9 @@
 #include <common/bolt12_merkle.h>
 #include <common/configdir.h>
 #include <common/json_command.h>
-#include <common/json_helpers.h>
-#include <common/json_tok.h>
+#include <common/json_param.h>
 #include <common/onion.h>
 #include <common/overflows.h>
-#include <common/param.h>
 #include <common/random_select.h>
 #include <common/timeout.h>
 #include <common/type_to_string.h>
@@ -617,13 +615,17 @@ static struct route_info **select_inchan(const tal_t *ctx,
 
 static int cmp_rr_number(const struct routehint_candidate *a,
 			 const struct routehint_candidate *b,
-			 void *unused)
+			 struct lightningd *ld)
 {
-	/* They're unique, so can't be equal */
 	if (a->c->rr_number > b->c->rr_number)
 		return 1;
-	assert(a->c->rr_number < b->c->rr_number);
-	return -1;
+	if (a->c->rr_number < b->c->rr_number)
+		return -1;
+
+	/* They're unique, so can't be equal */
+	log_broken(ld->log, "Two equal candidates %p and %p, channels %p and %p, rr_number %"PRIu64" and %"PRIu64,
+		   a, b, a->c, b->c, a->c->rr_number, b->c->rr_number);
+	return 0;
 }
 
 /** select_inchan_mpp
@@ -650,7 +652,7 @@ static struct route_info **select_inchan_mpp(const tal_t *ctx,
 	routehints = tal_arr(ctx, struct route_info *, 0);
 
 	/* Sort by rr_number, so we get fresh channels. */
-	asort(candidates, tal_count(candidates), cmp_rr_number, NULL);
+	asort(candidates, tal_count(candidates), cmp_rr_number, ld);
 	for (size_t i = 0; i < tal_count(candidates); i++) {
 		if (amount_msat_greater_eq(gathered, amount_needed))
 			break;
@@ -1147,7 +1149,7 @@ static struct command_result *json_invoice(struct command *cmd,
 	info->cmd = cmd;
 
 	if (!param(cmd, buffer, params,
-		   p_req("msatoshi", param_positive_msat_or_any, &msatoshi_val),
+		   p_req("amount_msat|msatoshi", param_positive_msat_or_any, &msatoshi_val),
 		   p_req("label", param_label, &info->label),
 		   p_req("description", param_escaped_string, &desc_val),
 		   p_opt_def("expiry", param_time, &expiry, 3600*24*7),

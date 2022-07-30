@@ -119,6 +119,7 @@ impl From<&responses::ListpeersPeersChannels> for pb::ListpeersPeersChannels {
             close_to: c.close_to.as_ref().map(|v| hex::decode(&v).unwrap()), // Rule #2 for type hex?
             private: c.private.clone(), // Rule #2 for type boolean?
             opener: c.opener as i32,
+            closer: c.closer.map(|v| v as i32),
             features: c.features.iter().map(|i| i.into()).collect(), // Rule #3 for type ListpeersPeersChannelsFeatures 
             to_us_msat: c.to_us_msat.map(|f| f.into()), // Rule #2 for type msat?
             min_to_us_msat: c.min_to_us_msat.map(|f| f.into()), // Rule #2 for type msat?
@@ -162,6 +163,7 @@ impl From<&responses::ListpeersPeers> for pb::ListpeersPeers {
             log: c.log.as_ref().map(|arr| arr.iter().map(|i| i.into()).collect()).unwrap_or(vec![]), // Rule #3 
             channels: c.channels.iter().map(|i| i.into()).collect(), // Rule #3 for type ListpeersPeersChannels 
             netaddr: c.netaddr.as_ref().map(|arr| arr.iter().map(|i| i.into()).collect()).unwrap_or(vec![]), // Rule #3 
+            remote_addr: c.remote_addr.clone(), // Rule #2 for type string?
             features: c.features.as_ref().map(|v| hex::decode(&v).unwrap()), // Rule #2 for type hex?
         }
     }
@@ -187,6 +189,7 @@ impl From<&responses::ListfundsOutputs> for pb::ListfundsOutputs {
             address: c.address.clone(), // Rule #2 for type string?
             redeemscript: c.redeemscript.as_ref().map(|v| hex::decode(&v).unwrap()), // Rule #2 for type hex?
             status: c.status as i32,
+            reserved: c.reserved.clone(), // Rule #2 for type boolean
             blockheight: c.blockheight.clone(), // Rule #2 for type u32?
         }
     }
@@ -296,7 +299,7 @@ impl From<&responses::CheckmessageResponse> for pb::CheckmessageResponse {
     fn from(c: &responses::CheckmessageResponse) -> Self {
         Self {
             verified: c.verified.clone(), // Rule #2 for type boolean
-            pubkey: c.pubkey.as_ref().map(|v| v.to_vec()), // Rule #2 for type pubkey?
+            pubkey: c.pubkey.to_vec(), // Rule #2 for type pubkey
         }
     }
 }
@@ -544,7 +547,7 @@ impl From<&responses::ListtransactionsTransactionsOutputs> for pb::Listtransacti
     fn from(c: &responses::ListtransactionsTransactionsOutputs) -> Self {
         Self {
             index: c.index.clone(), // Rule #2 for type u32
-            msat: Some(c.msat.into()), // Rule #2 for type msat
+            amount_msat: Some(c.amount_msat.into()), // Rule #2 for type msat
             script_pub_key: hex::decode(&c.script_pub_key).unwrap(), // Rule #2 for type hex
             item_type: c.item_type.map(|v| v as i32),
             channel: c.channel.as_ref().map(|v| v.to_string()), // Rule #2 for type short_channel_id?
@@ -851,6 +854,20 @@ impl From<&responses::FeeratesResponse> for pb::FeeratesResponse {
 }
 
 #[allow(unused_variables)]
+impl From<&responses::FundchannelResponse> for pb::FundchannelResponse {
+    fn from(c: &responses::FundchannelResponse) -> Self {
+        Self {
+            tx: hex::decode(&c.tx).unwrap(), // Rule #2 for type hex
+            txid: hex::decode(&c.txid).unwrap(), // Rule #2 for type txid
+            outnum: c.outnum.clone(), // Rule #2 for type u32
+            channel_id: hex::decode(&c.channel_id).unwrap(), // Rule #2 for type hex
+            close_to: c.close_to.as_ref().map(|v| hex::decode(&v).unwrap()), // Rule #2 for type hex?
+            mindepth: c.mindepth.clone(), // Rule #2 for type u32?
+        }
+    }
+}
+
+#[allow(unused_variables)]
 impl From<&responses::GetrouteRoute> for pb::GetrouteRoute {
     fn from(c: &responses::GetrouteRoute) -> Self {
         Self {
@@ -948,6 +965,14 @@ impl From<&responses::SignmessageResponse> for pb::SignmessageResponse {
 }
 
 #[allow(unused_variables)]
+impl From<&responses::StopResponse> for pb::StopResponse {
+    fn from(c: &responses::StopResponse) -> Self {
+        Self {
+        }
+    }
+}
+
+#[allow(unused_variables)]
 impl From<&pb::GetinfoRequest> for requests::GetinfoRequest {
     fn from(c: &pb::GetinfoRequest) -> Self {
         Self {
@@ -978,7 +1003,7 @@ impl From<&pb::ListfundsRequest> for requests::ListfundsRequest {
 impl From<&pb::SendpayRoute> for requests::SendpayRoute {
     fn from(c: &pb::SendpayRoute) -> Self {
         Self {
-            msatoshi: c.msatoshi.as_ref().unwrap().into(), // Rule #1 for type msat
+            amount_msat: c.amount_msat.as_ref().unwrap().into(), // Rule #1 for type msat
             id: cln_rpc::primitives::Pubkey::from_slice(&c.id).unwrap(), // Rule #1 for type pubkey
             delay: c.delay as u16, // Rule #1 for type u16
             channel: cln_rpc::primitives::ShortChannelId::from_str(&c.channel).unwrap(), // Rule #1 for type short_channel_id
@@ -993,7 +1018,7 @@ impl From<&pb::SendpayRequest> for requests::SendpayRequest {
             route: c.route.iter().map(|s| s.into()).collect(), // Rule #4
             payment_hash: c.payment_hash.clone().try_into().unwrap(), // Rule #1 for type hash
             label: c.label.clone(), // Rule #1 for type string?
-            msatoshi: c.msatoshi.as_ref().map(|a| a.into()), // Rule #1 for type msat?
+            amount_msat: c.amount_msat.as_ref().map(|a| a.into()), // Rule #1 for type msat?
             bolt11: c.bolt11.clone(), // Rule #1 for type string?
             payment_secret: c.payment_secret.clone().map(|v| v.try_into().unwrap()), // Rule #1 for type secret?
             partid: c.partid.map(|v| v as u16), // Rule #1 for type u16?
@@ -1150,7 +1175,7 @@ impl From<&pb::DelinvoiceRequest> for requests::DelinvoiceRequest {
 impl From<&pb::InvoiceRequest> for requests::InvoiceRequest {
     fn from(c: &pb::InvoiceRequest) -> Self {
         Self {
-            msatoshi: c.msatoshi.as_ref().unwrap().into(), // Rule #1 for type msat_or_any
+            amount_msat: c.amount_msat.as_ref().unwrap().into(), // Rule #1 for type msat_or_any
             description: c.description.clone(), // Rule #1 for type string
             label: c.label.clone(), // Rule #1 for type string
             expiry: c.expiry.clone(), // Rule #1 for type u64?
@@ -1194,7 +1219,7 @@ impl From<&pb::SendonionRequest> for requests::SendonionRequest {
             shared_secrets: Some(c.shared_secrets.iter().map(|s| s.clone().try_into().unwrap()).collect()), // Rule #4
             partid: c.partid.map(|v| v as u16), // Rule #1 for type u16?
             bolt11: c.bolt11.clone(), // Rule #1 for type string?
-            msatoshi: c.msatoshi.as_ref().map(|a| a.into()), // Rule #1 for type msat?
+            amount_msat: c.amount_msat.as_ref().map(|a| a.into()), // Rule #1 for type msat?
             destination: c.destination.as_ref().map(|v| cln_rpc::primitives::Pubkey::from_slice(v).unwrap()), // Rule #1 for type pubkey?
             localofferid: c.localofferid.clone().map(|v| v.try_into().unwrap()), // Rule #1 for type hash?
             groupid: c.groupid.clone(), // Rule #1 for type u64?
@@ -1226,7 +1251,7 @@ impl From<&pb::PayRequest> for requests::PayRequest {
     fn from(c: &pb::PayRequest) -> Self {
         Self {
             bolt11: c.bolt11.clone(), // Rule #1 for type string
-            msatoshi: c.msatoshi.as_ref().map(|a| a.into()), // Rule #1 for type msat?
+            amount_msat: c.amount_msat.as_ref().map(|a| a.into()), // Rule #1 for type msat?
             label: c.label.clone(), // Rule #1 for type string?
             riskfactor: c.riskfactor.clone(), // Rule #1 for type number?
             maxfeepercent: c.maxfeepercent.clone(), // Rule #1 for type number?
@@ -1308,7 +1333,7 @@ impl From<&pb::KeysendRequest> for requests::KeysendRequest {
     fn from(c: &pb::KeysendRequest) -> Self {
         Self {
             destination: cln_rpc::primitives::Pubkey::from_slice(&c.destination).unwrap(), // Rule #1 for type pubkey
-            msatoshi: c.msatoshi.as_ref().unwrap().into(), // Rule #1 for type msat
+            amount_msat: c.amount_msat.as_ref().unwrap().into(), // Rule #1 for type msat
             label: c.label.clone(), // Rule #1 for type string?
             maxfeepercent: c.maxfeepercent.clone(), // Rule #1 for type number?
             retry_for: c.retry_for.clone(), // Rule #1 for type u32?
@@ -1422,11 +1447,30 @@ impl From<&pb::FeeratesRequest> for requests::FeeratesRequest {
 }
 
 #[allow(unused_variables)]
+impl From<&pb::FundchannelRequest> for requests::FundchannelRequest {
+    fn from(c: &pb::FundchannelRequest) -> Self {
+        Self {
+            id: cln_rpc::primitives::Pubkey::from_slice(&c.id).unwrap(), // Rule #1 for type pubkey
+            amount: c.amount.as_ref().unwrap().into(), // Rule #1 for type msat_or_all
+            feerate: c.feerate.as_ref().map(|a| a.into()), // Rule #1 for type feerate?
+            announce: c.announce.clone(), // Rule #1 for type boolean?
+            minconf: c.minconf.clone(), // Rule #1 for type u32?
+            push_msat: c.push_msat.as_ref().map(|a| a.into()), // Rule #1 for type msat?
+            close_to: c.close_to.clone(), // Rule #1 for type string?
+            request_amt: c.request_amt.as_ref().map(|a| a.into()), // Rule #1 for type msat?
+            compact_lease: c.compact_lease.clone(), // Rule #1 for type string?
+            utxos: Some(c.utxos.iter().map(|s| s.into()).collect()), // Rule #4
+            mindepth: c.mindepth.clone(), // Rule #1 for type u32?
+        }
+    }
+}
+
+#[allow(unused_variables)]
 impl From<&pb::GetrouteRequest> for requests::GetrouteRequest {
     fn from(c: &pb::GetrouteRequest) -> Self {
         Self {
             id: cln_rpc::primitives::Pubkey::from_slice(&c.id).unwrap(), // Rule #1 for type pubkey
-            msatoshi: c.msatoshi.as_ref().unwrap().into(), // Rule #1 for type msat
+            amount_msat: c.amount_msat.as_ref().unwrap().into(), // Rule #1 for type msat
             riskfactor: c.riskfactor.clone(), // Rule #1 for type u64
             cltv: c.cltv.clone(), // Rule #1 for type number?
             fromid: c.fromid.as_ref().map(|v| cln_rpc::primitives::Pubkey::from_slice(v).unwrap()), // Rule #1 for type pubkey?
@@ -1475,6 +1519,14 @@ impl From<&pb::SignmessageRequest> for requests::SignmessageRequest {
     fn from(c: &pb::SignmessageRequest) -> Self {
         Self {
             message: c.message.clone(), // Rule #1 for type string
+        }
+    }
+}
+
+#[allow(unused_variables)]
+impl From<&pb::StopRequest> for requests::StopRequest {
+    fn from(c: &pb::StopRequest) -> Self {
+        Self {
         }
     }
 }

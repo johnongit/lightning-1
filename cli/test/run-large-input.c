@@ -78,19 +78,6 @@ bool fromwire_channel_id(const u8 **cursor UNNEEDED, size_t *max UNNEEDED,
 /* Generated stub for fromwire_node_id */
 void fromwire_node_id(const u8 **cursor UNNEEDED, size_t *max UNNEEDED, struct node_id *id UNNEEDED)
 { fprintf(stderr, "fromwire_node_id called!\n"); abort(); }
-/* Generated stub for fromwire_wireaddr */
-bool fromwire_wireaddr(const u8 **cursor UNNEEDED, size_t *max UNNEEDED, struct wireaddr *addr UNNEEDED)
-{ fprintf(stderr, "fromwire_wireaddr called!\n"); abort(); }
-/* Generated stub for json_add_member */
-void json_add_member(struct json_stream *js UNNEEDED,
-		     const char *fieldname UNNEEDED,
-		     bool quote UNNEEDED,
-		     const char *fmt UNNEEDED, ...)
-{ fprintf(stderr, "json_add_member called!\n"); abort(); }
-/* Generated stub for json_member_direct */
-char *json_member_direct(struct json_stream *js UNNEEDED,
-			 const char *fieldname UNNEEDED, size_t extra UNNEEDED)
-{ fprintf(stderr, "json_member_direct called!\n"); abort(); }
 /* Generated stub for log_level_name */
 const char *log_level_name(enum log_level level UNNEEDED)
 { fprintf(stderr, "log_level_name called!\n"); abort(); }
@@ -113,9 +100,6 @@ void towire_channel_id(u8 **pptr UNNEEDED, const struct channel_id *channel_id U
 /* Generated stub for towire_node_id */
 void towire_node_id(u8 **pptr UNNEEDED, const struct node_id *id UNNEEDED)
 { fprintf(stderr, "towire_node_id called!\n"); abort(); }
-/* Generated stub for towire_wireaddr */
-void towire_wireaddr(u8 **pptr UNNEEDED, const struct wireaddr *addr UNNEEDED)
-{ fprintf(stderr, "towire_wireaddr called!\n"); abort(); }
 /* Generated stub for version_and_exit */
 char *version_and_exit(const void *unused UNNEEDED)
 { fprintf(stderr, "version_and_exit called!\n"); abort(); }

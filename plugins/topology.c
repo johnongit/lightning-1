@@ -6,8 +6,8 @@
 #include <ccan/tal/str/str.h>
 #include <common/dijkstra.h>
 #include <common/gossmap.h>
+#include <common/json_param.h>
 #include <common/json_stream.h>
-#include <common/json_tok.h>
 #include <common/memleak.h>
 #include <common/pseudorand.h>
 #include <common/route.h>
@@ -130,7 +130,7 @@ static struct command_result *json_getroute(struct command *cmd,
 
 	if (!param(cmd, buffer, params,
 		   p_req("id", param_node_id, &destination),
-		   p_req("msatoshi", param_msat, &msat),
+		   p_req("amount_msat|msatoshi", param_msat, &msat),
 		   p_req("riskfactor", param_millionths, &riskfactor_millionths),
 		   p_opt_def("cltv", param_number, &cltv, 9),
 		   p_opt_def("fromid", param_node_id, &source, local_id),
@@ -557,9 +557,9 @@ static struct amount_msat peer_capacity(const struct gossmap *gossmap,
 			continue;
 		if (!c->half[!dir].enabled)
 			continue;
-		if (!amount_msat_add(&capacity, capacity,
-				    amount_msat(fp16_to_u64(c->half[dir]
-							   .htlc_max))))
+		if (!amount_msat_add(
+			&capacity, capacity,
+			amount_msat(fp16_to_u64(c->half[!dir].htlc_max))))
 			continue;
 	}
 	return capacity;

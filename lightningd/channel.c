@@ -4,7 +4,6 @@
 #include <common/closing_fee.h>
 #include <common/fee_states.h>
 #include <common/json_command.h>
-#include <common/json_helpers.h>
 #include <common/type_to_string.h>
 #include <common/wire_error.h>
 #include <connectd/connectd_wiregen.h>
@@ -25,12 +24,8 @@ void channel_set_owner(struct channel *channel, struct subd *owner)
 	struct subd *old_owner = channel->owner;
 	channel->owner = owner;
 
-	if (old_owner) {
+	if (old_owner)
 		subd_release_channel(old_owner, channel);
-		if (channel->connected)
-			maybe_disconnect_peer(channel->peer->ld, channel->peer);
-	}
-	channel->connected = (owner && owner->talks_to_peer);
 }
 
 struct htlc_out *channel_has_htlc_out(struct channel *channel)
@@ -212,6 +207,7 @@ struct channel *new_unsaved_channel(struct peer *peer,
 	channel->openchannel_signed_cmd = NULL;
 	channel->state = DUALOPEND_OPEN_INIT;
 	channel->owner = NULL;
+	channel->scb = NULL;
 	memset(&channel->billboard, 0, sizeof(channel->billboard));
 	channel->billboard.transient = tal_fmt(channel, "%s",
 					       "Empty channel init'd");
@@ -237,9 +233,8 @@ struct channel *new_unsaved_channel(struct peer *peer,
 	channel->shutdown_wrong_funding = NULL;
 	channel->closing_feerate_range = NULL;
 	channel->channel_update = NULL;
+	channel->alias[LOCAL] = channel->alias[REMOTE] = NULL;
 
-	/* Channel is connected! */
-	channel->connected = true;
 	channel->shutdown_scriptpubkey[REMOTE] = NULL;
 	channel->last_was_revoke = false;
 	channel->last_sent_commit = NULL;
@@ -352,6 +347,8 @@ struct channel *new_channel(struct peer *peer, u64 dbid,
 			    bool remote_funding_locked,
 			    /* NULL or stolen */
 			    struct short_channel_id *scid,
+			    struct short_channel_id *alias_local STEALS,
+			    struct short_channel_id *alias_remote STEALS,
 			    struct channel_id *cid,
 			    struct amount_msat our_msat,
 			    struct amount_msat msat_to_us_min,
@@ -373,7 +370,6 @@ struct channel *new_channel(struct peer *peer, u64 dbid,
 			    u32 first_blocknum,
 			    u32 min_possible_feerate,
 			    u32 max_possible_feerate,
-			    bool connected,
 			    const struct basepoints *local_basepoints,
 			    const struct pubkey *local_funding_pubkey,
 			    const struct pubkey *future_per_commitment_point,
@@ -416,6 +412,14 @@ struct channel *new_channel(struct peer *peer, u64 dbid,
 	channel->owner = NULL;
 	memset(&channel->billboard, 0, sizeof(channel->billboard));
 	channel->billboard.transient = tal_strdup(channel, transient_billboard);
+	channel->scb = tal(channel, struct scb_chan);
+	channel->scb->id = dbid;
+	channel->scb->addr = peer->addr;
+	channel->scb->node_id = peer->id;
+	channel->scb->funding = *funding;
+	channel->scb->cid = *cid;
+	channel->scb->funding_sats = funding_sats;
+	channel->scb->type = channel_type_dup(channel->scb, type);
 
 	if (!log) {
 		channel->log = new_log(channel,
@@ -428,6 +432,7 @@ struct channel *new_channel(struct peer *peer, u64 dbid,
 	channel->channel_flags = channel_flags;
 	channel->our_config = *our_config;
 	channel->minimum_depth = minimum_depth;
+	channel->depth = 0;
 	channel->next_index[LOCAL] = next_index_local;
 	channel->next_index[REMOTE] = next_index_remote;
 	channel->next_htlc_id = next_htlc_id;
@@ -437,13 +442,17 @@ struct channel *new_channel(struct peer *peer, u64 dbid,
 	channel->our_funds = our_funds;
 	channel->remote_funding_locked = remote_funding_locked;
 	channel->scid = tal_steal(channel, scid);
+	channel->alias[LOCAL] = tal_steal(channel, alias_local);
+	channel->alias[REMOTE] = tal_steal(channel, alias_remote);  /* Haven't gotten one yet. */
 	channel->cid = *cid;
 	channel->our_msat = our_msat;
 	channel->msat_to_us_min = msat_to_us_min;
 	channel->msat_to_us_max = msat_to_us_max;
-	channel->last_tx = tal_steal(channel, last_tx);
-	channel->last_tx->chainparams = chainparams;
-	channel->last_tx_type = TX_UNKNOWN;
+        channel->last_tx = tal_steal(channel, last_tx);
+	if (channel->last_tx) {
+		channel->last_tx->chainparams = chainparams;
+		channel->last_tx_type = TX_UNKNOWN;
+	}
 	channel->last_sig = *last_sig;
 	channel->last_htlc_sigs = tal_steal(channel, last_htlc_sigs);
 	channel->channel_info = *channel_info;
@@ -469,7 +478,6 @@ struct channel *new_channel(struct peer *peer, u64 dbid,
 	channel->first_blocknum = first_blocknum;
 	channel->min_possible_feerate = min_possible_feerate;
 	channel->max_possible_feerate = max_possible_feerate;
-	channel->connected = connected;
 	channel->local_basepoints = *local_basepoints;
 	channel->local_funding_pubkey = *local_funding_pubkey;
 	channel->future_per_commitment_point
@@ -517,6 +525,12 @@ struct channel *new_channel(struct peer *peer, u64 dbid,
 	txfilter_add_scriptpubkey(peer->ld->owned_txfilter,
 				  take(p2wpkh_for_keyidx(NULL, peer->ld,
 							 channel->final_key_idx)));
+	/* scid is NULL when opening a new channel so we don't
+	 * need to set error in that case as well */
+	if (is_stub_scid(scid))
+		channel->error = towire_errorfmt(peer->ld,
+						 &channel->cid,
+						 "We can't be together anymore.");
 
 	return channel;
 }
@@ -596,6 +610,11 @@ struct channel *any_channel_by_scid(struct lightningd *ld,
 			if (chan->scid
 			    && short_channel_id_eq(scid, chan->scid))
 				return chan;
+			/* We also want to find the channel by its local alias
+			 * when we forward. */
+			if (chan->alias[LOCAL] &&
+			    short_channel_id_eq(scid, chan->alias[LOCAL]))
+				return chan;
 		}
 	}
 	return NULL;
@@ -655,6 +674,18 @@ struct channel *find_channel_by_scid(const struct peer *peer,
 
 	list_for_each(&peer->channels, c, list) {
 		if (c->scid && short_channel_id_eq(c->scid, scid))
+			return c;
+	}
+	return NULL;
+}
+
+struct channel *find_channel_by_alias(const struct peer *peer,
+				      const struct short_channel_id *alias,
+				      enum side side)
+{
+	struct channel *c;
+	list_for_each(&peer->channels, c, list) {
+		if (c->alias[side] && short_channel_id_eq(c->alias[side], alias))
 			return c;
 	}
 	return NULL;
@@ -745,6 +776,11 @@ void channel_fail_permanent(struct channel *channel,
 			    const char *fmt,
 			    ...)
 {
+	/* Don't do anything if it's an stub channel because
+	 * peer has already closed it unilatelrally. */
+	if (is_stub_scid(channel->scid))
+		return;
+
 	struct lightningd *ld = channel->peer->ld;
 	va_list ap;
 	char *why;
@@ -893,9 +929,7 @@ void channel_set_billboard(struct channel *channel, bool perm, const char *str)
 	}
 }
 
-static void err_and_reconnect(struct channel *channel,
-			      const char *why,
-			      u32 seconds_before_reconnect)
+static void channel_err(struct channel *channel, const char *why)
 {
 	log_info(channel->log, "Peer transient failure in %s: %s",
 		 channel_state_name(channel), why);
@@ -908,30 +942,38 @@ static void err_and_reconnect(struct channel *channel,
 		return;
 	}
 #endif
-
 	channel_set_owner(channel, NULL);
-
-	/* Their address only useful if we connected to them */
-	try_reconnect(channel, channel->peer, seconds_before_reconnect,
-		      channel->peer->connected_incoming
-		      ? NULL
-		      : &channel->peer->addr);
 }
 
-void channel_fail_reconnect_later(struct channel *channel, const char *fmt, ...)
+void channel_fail_transient_delayreconnect(struct channel *channel, const char *fmt, ...)
 {
 	va_list ap;
 
 	va_start(ap, fmt);
-	err_and_reconnect(channel, tal_vfmt(tmpctx, fmt, ap), 60);
+	channel_err(channel, tal_vfmt(tmpctx, fmt, ap));
 	va_end(ap);
 }
 
-void channel_fail_reconnect(struct channel *channel, const char *fmt, ...)
+void channel_fail_transient(struct channel *channel, const char *fmt, ...)
 {
 	va_list ap;
 
 	va_start(ap, fmt);
-	err_and_reconnect(channel, tal_vfmt(tmpctx, fmt, ap), 1);
+	channel_err(channel, tal_vfmt(tmpctx, fmt, ap));
 	va_end(ap);
+}
+
+bool channel_is_connected(const struct channel *channel)
+{
+	return channel->owner && channel->owner->talks_to_peer;
+}
+
+const struct short_channel_id *
+channel_scid_or_local_alias(const struct channel *chan)
+{
+	assert(chan->scid != NULL || chan->alias[LOCAL] != NULL);
+	if (chan->scid != NULL)
+		return chan->scid;
+	else
+		return chan->alias[LOCAL];
 }

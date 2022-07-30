@@ -10,8 +10,8 @@
 #include <common/bolt12_merkle.h>
 #include <common/dijkstra.h>
 #include <common/gossmap.h>
+#include <common/json_param.h>
 #include <common/json_stream.h>
-#include <common/json_tok.h>
 #include <common/memleak.h>
 #include <common/overflows.h>
 #include <common/route.h>
@@ -345,9 +345,13 @@ static struct command_result *handle_invreq_response(struct command *cmd,
 	 */
 	/* We always tell them this unless it's trivial to calc and
 	 * exactly as expected. */
-	if (!expected_amount || *inv->amount != *expected_amount)
-		json_add_amount_msat_only(out, "msat",
+	if (!expected_amount || *inv->amount != *expected_amount) {
+		if (deprecated_apis)
+			json_add_amount_msat_only(out, "msat",
+						  amount_msat(*inv->amount));
+		json_add_amount_msat_only(out, "amount_msat",
 					  amount_msat(*inv->amount));
+	}
 	json_object_end(out);
 
 	/* We tell them about next period at this point, if any. */
@@ -1233,7 +1237,7 @@ static struct command_result *json_fetchinvoice(struct command *cmd,
 	invreq = tlv_invoice_request_new(sent);
 	if (!param(cmd, buffer, params,
 		   p_req("offer", param_offer, &sent->offer),
-		   p_opt("msatoshi", param_msat, &msat),
+		   p_opt("amount_msat|msatoshi", param_msat, &msat),
 		   p_opt("quantity", param_u64, &invreq->quantity),
 		   p_opt("recurrence_counter", param_number,
 			 &invreq->recurrence_counter),
@@ -1647,7 +1651,7 @@ static struct command_result *json_sendinvoice(struct command *cmd,
 	if (!param(cmd, buffer, params,
 		   p_req("offer", param_offer, &sent->offer),
 		   p_req("label", param_label, &sent->inv_label),
-		   p_opt("msatoshi", param_msat, &msat),
+		   p_opt("amount_msat|msatoshi", param_msat, &msat),
 		   p_opt_def("timeout", param_number, &timeout, 90),
 		   p_opt("quantity", param_u64, &sent->inv->quantity),
 		   NULL))

@@ -6,7 +6,8 @@
 #include <ccan/pipecmd/pipecmd.h>
 #include <ccan/tal/grab_file/grab_file.h>
 #include <ccan/tal/str/str.h>
-#include <common/json_tok.h>
+#include <common/json_param.h>
+#include <common/json_stream.h>
 #include <common/memleak.h>
 #include <errno.h>
 #include <plugins/libplugin.h>
@@ -414,7 +415,7 @@ static struct command_result *process_getutxout(struct bitcoin_cli *bcli)
 		return command_err_bcli_badjson(bcli, err);
 
 	response = jsonrpc_stream_success(bcli->cmd);
-	json_add_amount_sat_only(response, "amount", output.amount);
+	json_add_sats(response, "amount", output.amount);
 	json_add_string(response, "script", tal_hex(response, output.script));
 
 	return command_finished(bcli->cmd, response);

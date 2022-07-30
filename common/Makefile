@@ -34,7 +34,6 @@ COMMON_SRC_NOGEN :=				\
 	common/features.c			\
 	common/fee_states.c			\
 	common/fp16.c				\
-	common/gossip_rcvd_filter.c		\
 	common/gossip_store.c			\
 	common/gossmap.c			\
 	common/hash_u5.c			\
@@ -47,10 +46,10 @@ COMMON_SRC_NOGEN :=				\
 	common/initial_channel.c		\
 	common/initial_commit_tx.c		\
 	common/iso4217.c			\
-	common/json.c				\
-	common/json_helpers.c			\
+	common/json_param.c			\
+	common/json_parse.c			\
+	common/json_parse_simple.c		\
 	common/json_stream.c			\
-	common/json_tok.c			\
 	common/key_derive.c			\
 	common/keyset.c				\
 	common/lease_rates.c			\
@@ -59,7 +58,6 @@ COMMON_SRC_NOGEN :=				\
 	common/node_id.c			\
 	common/onion.c				\
 	common/onionreply.c			\
-	common/param.c				\
 	common/peer_billboard.c			\
 	common/peer_failed.c			\
 	common/peer_io.c			\
@@ -92,7 +90,7 @@ COMMON_SRC_NOGEN :=				\
 	common/wire_error.c
 
 
-COMMON_SRC_GEN := common/status_wiregen.c common/peer_status_wiregen.c
+COMMON_SRC_GEN := common/status_wiregen.c common/peer_status_wiregen.c common/scb_wiregen.c
 
 COMMON_HEADERS_NOGEN := $(COMMON_SRC_NOGEN:.c=.h)	\
 	common/closing_fee.h				\
@@ -106,12 +104,15 @@ COMMON_HEADERS_NOGEN := $(COMMON_SRC_NOGEN:.c=.h)	\
 	common/overflows.h				\
 	common/tx_roles.h
 
-COMMON_HEADERS_GEN := common/htlc_state_names_gen.h common/status_wiregen.h common/peer_status_wiregen.h
+COMMON_HEADERS_GEN := common/htlc_state_names_gen.h common/status_wiregen.h common/peer_status_wiregen.h common/scb_wiregen.h
 
 COMMON_HEADERS := $(COMMON_HEADERS_GEN) $(COMMON_HEADERS_NOGEN)
 COMMON_SRC := $(COMMON_SRC_NOGEN) $(COMMON_SRC_GEN)
 
 COMMON_OBJS := $(COMMON_SRC:.c=.o)
+
+common/scb_wiregen.h_args := -s
+common/scb_wiregen.c_args := -s
 
 # Check that all h and c files are in the Makefile!
 check-common-files:

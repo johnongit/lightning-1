@@ -12,7 +12,8 @@
         "bolt12 offer",
         "bolt12 invoice",
         "bolt12 invoice_request",
-        "bolt11 invoice"
+        "bolt11 invoice",
+        "rune"
       ],
       "description": "what kind of object it decoded to"
     },
@@ -906,6 +907,120 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "rune"
+            ]
+          },
+          "valid": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "string",
+          "restrictions",
+          "valid"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "unique_id": {
+            "type": "string",
+            "description": "unique id (always a numeric id on runes we create)"
+          },
+          "version": {
+            "type": "string",
+            "description": "rune version, not currently set on runes we create"
+          },
+          "valid": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "type": {},
+          "string": {
+            "type": "string",
+            "description": "the string encoding of the rune"
+          },
+          "restrictions": {
+            "type": "array",
+            "description": "restrictions built into the rune: all must pass",
+            "items": {
+              "type": "object",
+              "required": [
+                "alternatives",
+                "summary"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "alternatives": {
+                  "type": "array",
+                  "description": "each way restriction can be met: any can pass",
+                  "items": {
+                    "type": "string",
+                    "description": "the alternative of form fieldname condition fieldname"
+                  }
+                },
+                "summary": {
+                  "type": "string",
+                  "description": "human-readable summary of this restriction"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "rune"
+            ]
+          },
+          "valid": {
+            "type": "boolean",
+            "enum": [
+              false
+            ]
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "valid"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "valid": {
+            "type": "boolean",
+            "enum": [
+              false
+            ]
+          },
+          "type": {},
+          "warning_rune_invalid_utf8": {
+            "type": "string",
+            "description": "the rune contains invalid UTF-8 strings"
+          },
+          "hex": {
+            "type": "hex",
+            "description": "the raw rune in hex"
           }
         }
       }

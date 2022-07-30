@@ -20,11 +20,10 @@
 #include <common/htlc_trim.h>
 #include <common/initial_commit_tx.h>
 #include <common/json_command.h>
-#include <common/json_helpers.h>
-#include <common/json_tok.h>
+#include <common/json_param.h>
 #include <common/jsonrpc_errors.h>
 #include <common/key_derive.h>
-#include <common/param.h>
+#include <common/scb_wiregen.h>
 #include <common/shutdown_scriptpubkey.h>
 #include <common/status.h>
 #include <common/timeout.h>
@@ -46,7 +45,6 @@
 #include <lightningd/connect_control.h>
 #include <lightningd/dual_open_control.h>
 #include <lightningd/hsm_control.h>
-#include <lightningd/json.h>
 #include <lightningd/jsonrpc.h>
 #include <lightningd/lightningd.h>
 #include <lightningd/log.h>
@@ -97,10 +95,13 @@ struct peer *new_peer(struct lightningd *ld, u64 dbid,
 	peer->uncommitted_channel = NULL;
 	peer->addr = *addr;
 	peer->connected_incoming = connected_incoming;
+	peer->remote_addr = NULL;
 	peer->their_features = NULL;
 	list_head_init(&peer->channels);
 	peer->direction = node_id_idx(&peer->ld->id, &peer->id);
-	peer->is_connected = false;
+	peer->connected = PEER_DISCONNECTED;
+	peer->last_connect_attempt.ts.tv_sec
+		= peer->last_connect_attempt.ts.tv_nsec = 0;
 #if DEVELOPER
 	peer->ignore_htlcs = false;
 #endif
@@ -134,7 +135,44 @@ void maybe_delete_peer(struct peer *peer)
 		}
 		return;
 	}
+	/* Maybe it's reconnected / reconnecting? */
+	if (peer->connected != PEER_DISCONNECTED)
+		return;
 	delete_peer(peer);
+}
+
+static void peer_channels_cleanup(struct lightningd *ld,
+				  const struct node_id *id)
+{
+	struct peer *peer;
+	struct channel *c, **channels;
+
+	peer = peer_by_id(ld, id);
+	if (!peer)
+		return;
+
+	/* Freeing channels can free peer, so gather first. */
+	channels = tal_arr(tmpctx, struct channel *, 0);
+	list_for_each(&peer->channels, c, list)
+		tal_arr_expand(&channels, c);
+
+	if (peer->uncommitted_channel) {
+		/* Frees peer if no channels */
+		kill_uncommitted_channel(peer->uncommitted_channel,
+					 "Disconnected");
+	} else if (tal_count(channels) == 0)
+		/* Was completely idle. */
+		tal_free(peer);
+
+	for (size_t i = 0; i < tal_count(channels); i++) {
+		c = channels[i];
+		if (channel_active(c)) {
+			channel_cleanup_commands(c, "Disconnected");
+			channel_fail_transient(c, "Disconnected");
+		} else if (channel_unsaved(c)) {
+			channel_unsaved_close_conn(c, "Disconnected");
+		}
+	}
 }
 
 struct peer *find_peer_by_dbid(struct lightningd *ld, u64 dbid)
@@ -219,7 +257,7 @@ static void remove_sig(struct bitcoin_tx *signed_tx)
 	bitcoin_tx_input_set_witness(signed_tx, 0, NULL);
 }
 
-static bool invalid_last_tx(const struct bitcoin_tx *tx)
+bool invalid_last_tx(const struct bitcoin_tx *tx)
 {
 	/* This problem goes back further, but was discovered just before the
 	 * 0.7.1 release. */
@@ -286,6 +324,21 @@ void drop_to_chain(struct lightningd *ld, struct channel *channel,
 	resolve_close_command(ld, channel, cooperative);
 }
 
+void resend_closing_transactions(struct lightningd *ld)
+{
+	struct peer *peer;
+	struct channel *channel;
+
+	list_for_each(&ld->peers, peer, list) {
+		list_for_each(&peer->channels, channel, list) {
+			if (channel->state == CLOSINGD_COMPLETE)
+				drop_to_chain(ld, channel, true);
+			else if (channel->state == AWAITING_UNILATERAL)
+				drop_to_chain(ld, channel, false);
+		}
+	}
+}
+
 void channel_errmsg(struct channel *channel,
 		    struct peer_fd *peer_fd,
 		    const struct channel_id *channel_id UNUSED,
@@ -306,7 +359,7 @@ void channel_errmsg(struct channel *channel,
 	/* No peer_fd means a subd crash or disconnection. */
 	if (!peer_fd) {
 		/* If the channel is unsaved, we forget it */
-		channel_fail_reconnect(channel, "%s: %s",
+		channel_fail_transient(channel, "%s: %s",
 				       channel->owner->name, desc);
 		return;
 	}
@@ -320,8 +373,8 @@ void channel_errmsg(struct channel *channel,
 	 * and we would close the channel on them.  We now support warnings
 	 * for this case. */
 	if (warning) {
-		channel_fail_reconnect_later(channel, "%s WARNING: %s",
-					     channel->owner->name, desc);
+		channel_fail_transient_delayreconnect(channel, "%s WARNING: %s",
+						      channel->owner->name, desc);
 		return;
 	}
 
@@ -628,7 +681,6 @@ static void json_add_channel(struct lightningd *ld,
 	struct channel_stats channel_stats;
 	struct amount_msat funding_msat, peer_msats, our_msats;
 	struct amount_sat peer_funded_sats;
-	struct peer *p = channel->peer;
 	struct state_change_entry *state_changes;
 	u32 feerate;
 
@@ -639,10 +691,7 @@ static void json_add_channel(struct lightningd *ld,
 		bitcoin_txid(channel->last_tx, &txid);
 
 		json_add_txid(response, "scratch_txid", &txid);
-		if (deprecated_apis)
-			json_add_amount_sat_only(response, "last_tx_fee",
-						 bitcoin_tx_compute_fee(channel->last_tx));
-		json_add_amount_sat_only(response, "last_tx_fee_msat",
+		json_add_amount_sat_msat(response, "last_tx_fee_msat",
 					 bitcoin_tx_compute_fee(channel->last_tx));
 	}
 
@@ -656,12 +705,17 @@ static void json_add_channel(struct lightningd *ld,
 	if (channel->owner)
 		json_add_string(response, "owner", channel->owner->name);
 
-	if (channel->scid) {
+	if (channel->scid)
 		json_add_short_channel_id(response, "short_channel_id",
 					  channel->scid);
+
+	/* If there is any way we can use the channel we'd better have
+	 * a direction attached. Technically we could always add it,
+	 * as it's just the lexicographic order between node_ids, but
+	 * why bother if we can't use it? */
+	if (channel->scid || channel->alias[LOCAL] || channel->alias[REMOTE])
 		json_add_num(response, "direction",
 			     node_id_idx(&ld->id, &channel->peer->id));
-	}
 
 	json_add_string(response, "channel_id",
 			type_to_string(tmpctx, struct channel_id, &channel->cid));
@@ -711,10 +765,10 @@ static void json_add_channel(struct lightningd *ld,
 						inflight->funding->feerate,
 						feerate_style_name(
 							FEERATE_PER_KSIPA)));
-			json_add_amount_sat_only(response,
+			json_add_amount_sat_msat(response,
 						 "total_funding_msat",
 						 inflight->funding->total_funds);
-			json_add_amount_sat_only(response,
+			json_add_amount_sat_msat(response,
 						 "our_funding_msat",
 						 inflight->funding->our_funds);
 			/* Add the expected commitment tx id also */
@@ -746,14 +800,25 @@ static void json_add_channel(struct lightningd *ld,
 	if (channel->closer != NUM_SIDES)
 		json_add_string(response, "closer", channel->closer == LOCAL ?
 						    "local" : "remote");
-	else if (deprecated_apis)
-		json_add_null(response, "closer");
+
+	if (channel->alias[LOCAL] || channel->alias[REMOTE]) {
+		json_object_start(response, "alias");
+		if (channel->alias[LOCAL])
+			json_add_short_channel_id(response, "local",
+						  channel->alias[LOCAL]);
+		if (channel->alias[REMOTE])
+			json_add_short_channel_id(response, "remote",
+						  channel->alias[REMOTE]);
+		json_object_end(response);
+	}
 
 	json_array_start(response, "features");
 	if (channel_has(channel, OPT_STATIC_REMOTEKEY))
 		json_add_string(response, NULL, "option_static_remotekey");
 	if (channel_has(channel, OPT_ANCHOR_OUTPUTS))
 		json_add_string(response, NULL, "option_anchor_outputs");
+	if (channel_has(channel, OPT_ZEROCONF))
+		json_add_string(response, NULL, "option_zeroconf");
 	json_array_end(response);
 
 	if (!amount_sat_sub(&peer_funded_sats, channel->funding_sats,
@@ -779,24 +844,6 @@ static void json_add_channel(struct lightningd *ld,
 			   type_to_string(tmpctx, struct amount_sat,
 					  &channel->our_funds));
 		our_msats = AMOUNT_MSAT(0);
-	}
-
-	if (deprecated_apis) {
-		json_object_start(response, "funding_allocation_msat");
-		json_add_u64(response, node_id_to_hexstr(tmpctx, &p->id),
-			     peer_msats.millisatoshis); /* Raw: JSON field */
-		json_add_u64(response, node_id_to_hexstr(tmpctx, &ld->id),
-			     our_msats.millisatoshis); /* Raw: JSON field */
-		json_object_end(response);
-
-		json_object_start(response, "funding_msat");
-		json_add_sat_only(response,
-				  node_id_to_hexstr(tmpctx, &p->id),
-				  peer_funded_sats);
-		json_add_sat_only(response,
-				  node_id_to_hexstr(tmpctx, &ld->id),
-				  channel->our_funds);
-		json_object_end(response);
 	}
 
 	json_object_start(response, "funding");
@@ -971,6 +1018,93 @@ peer_connected_serialize(struct peer_connected_hook_payload *payload,
 	json_object_end(stream); /* .peer */
 }
 
+/* Talk to connectd about an active channel */
+static void connect_activate_subd(struct lightningd *ld, struct channel *channel)
+{
+	const u8 *error;
+	int fds[2];
+
+	/* If we have a canned error for this channel, send it now */
+	if (channel->error) {
+		error = channel->error;
+		goto send_error;
+	}
+
+	switch (channel->state) {
+	case ONCHAIN:
+	case FUNDING_SPEND_SEEN:
+	case CLOSINGD_COMPLETE:
+	case CLOSED:
+		/* Channel is active */
+		abort();
+	case AWAITING_UNILATERAL:
+		/* channel->error is not saved in db, so this can
+		 * happen if we restart. */
+		error = towire_errorfmt(tmpctx, &channel->cid,
+					"Awaiting unilateral close");
+		goto send_error;
+
+	case DUALOPEND_OPEN_INIT:
+	case DUALOPEND_AWAITING_LOCKIN:
+		assert(!channel->owner);
+		if (socketpair(AF_LOCAL, SOCK_STREAM, 0, fds) != 0) {
+			log_broken(channel->log,
+				   "Failed to create socketpair: %s",
+				   strerror(errno));
+			error = towire_warningfmt(tmpctx, &channel->cid,
+						  "Trouble in paradise?");
+			goto send_error;
+		}
+		if (peer_restart_dualopend(channel->peer,
+					   new_peer_fd(tmpctx, fds[0]),
+					   channel))
+			goto tell_connectd;
+		close(fds[1]);
+		return;
+
+	case CHANNELD_AWAITING_LOCKIN:
+	case CHANNELD_NORMAL:
+	case CHANNELD_SHUTTING_DOWN:
+	case CLOSINGD_SIGEXCHANGE:
+		assert(!channel->owner);
+		if (socketpair(AF_LOCAL, SOCK_STREAM, 0, fds) != 0) {
+			log_broken(channel->log,
+				   "Failed to create socketpair: %s",
+				   strerror(errno));
+			error = towire_warningfmt(tmpctx, &channel->cid,
+						  "Trouble in paradise?");
+			goto send_error;
+		}
+		if (peer_start_channeld(channel,
+					new_peer_fd(tmpctx, fds[0]),
+					NULL, true,
+					NULL)) {
+			goto tell_connectd;
+		}
+		close(fds[1]);
+		return;
+	}
+	abort();
+
+tell_connectd:
+	subd_send_msg(ld->connectd,
+		      take(towire_connectd_peer_connect_subd(NULL,
+							     &channel->peer->id,
+							     channel->peer->connectd_counter,
+							     &channel->cid)));
+	subd_send_fd(ld->connectd, fds[1]);
+	return;
+
+send_error:
+	log_debug(channel->log, "Telling connectd to send error %s",
+		       tal_hex(tmpctx, error));
+	/* Get connectd to send error and close. */
+	subd_send_msg(ld->connectd,
+		      take(towire_connectd_peer_final_msg(NULL, &channel->peer->id,
+							  channel->peer->connectd_counter,
+							  error)));
+}
+
 static void peer_connected_hook_final(struct peer_connected_hook_payload *payload STEALS)
 {
 	struct lightningd *ld = payload->ld;
@@ -984,8 +1118,10 @@ static void peer_connected_hook_final(struct peer_connected_hook_payload *payloa
 	 * subd). */
 	tal_steal(tmpctx, payload);
 
-	/* Notify anyone who cares */
-	notify_connect(ld, &peer->id, payload->incoming, &addr);
+	/* If we disconnected in the meantime, forget about it.
+	 * (disconnect will have failed any connect commands). */
+	if (peer->connected == PEER_DISCONNECTED)
+		return;
 
 	/* Check for specific errors of a hook */
 	if (payload->error) {
@@ -993,23 +1129,38 @@ static void peer_connected_hook_final(struct peer_connected_hook_payload *payloa
 		goto send_error;
 	}
 
-	list_for_each(&peer->channels, channel, list) {
+	/* Now we finally consider ourselves connected! */
+	assert(peer->connected == PEER_CONNECTING);
+	peer->connected = PEER_CONNECTED;
+
+	/* Succeed any connect() commands */
+	connect_succeeded(ld, peer, payload->incoming, &payload->addr);
+
+	/* Notify anyone who cares */
+	notify_connect(ld, &peer->id, payload->incoming, &addr);
+
 #if DEVELOPER
-		if (dev_disconnect_permanent(ld)) {
+	/* Developer hack to fail all channels on permfail line. */
+	if (dev_disconnect_permanent(ld)) {
+		list_for_each(&peer->channels, channel, list) {
 			channel_fail_permanent(channel, REASON_LOCAL,
 					       "dev_disconnect permfail");
-			error = channel->error;
-			goto send_error;
+			subd_send_msg(ld->connectd,
+				      take(towire_connectd_peer_final_msg(NULL, &peer->id,
+									  peer->connectd_counter,
+									  channel->error)));
 		}
+		return;
+	}
 #endif
 
+	/* connect appropriate subds for all (active) channels! */
+	list_for_each(&peer->channels, channel, list) {
 		if (channel_active(channel)) {
-			log_debug(channel->log, "Peer has reconnected, state %s: telling connectd to make active",
+			log_debug(channel->log, "Peer has reconnected, state %s: connecting subd",
 				  channel_state_name(channel));
 
-			subd_send_msg(ld->connectd,
-				      take(towire_connectd_peer_make_active(NULL, &peer->id,
-									    &channel->cid)));
+			connect_activate_subd(ld, channel);
 		}
 	}
 	return;
@@ -1020,6 +1171,7 @@ send_error:
 	/* Get connectd to send error and close. */
 	subd_send_msg(ld->connectd,
 		      take(towire_connectd_peer_final_msg(NULL, &peer->id,
+							  peer->connectd_counter,
 							  error)));
 }
 
@@ -1134,20 +1286,6 @@ REGISTER_PLUGIN_HOOK(peer_connected,
 		     peer_connected_serialize,
 		     struct peer_connected_hook_payload *);
 
-/* Returns true if we're still waiting for subds for active channels */
-static bool peer_subds_pending(const struct peer *peer)
-{
-	struct channel *channel;
-
-	list_for_each(&peer->channels, channel, list) {
-		if (!channel_active(channel))
-			continue;
-		if (!channel->owner)
-			return true;
-	}
-	return false;
-}
-
 /* Connectd tells us a peer has connected: it never hands us duplicates, since
  * it holds them until we say peer_disconnected. */
 void peer_connected(struct lightningd *ld, const u8 *msg)
@@ -1156,17 +1294,24 @@ void peer_connected(struct lightningd *ld, const u8 *msg)
 	u8 *their_features;
 	struct peer *peer;
 	struct peer_connected_hook_payload *hook_payload;
+	u64 connectd_counter;
 
 	hook_payload = tal(NULL, struct peer_connected_hook_payload);
 	hook_payload->ld = ld;
 	hook_payload->error = NULL;
 	if (!fromwire_connectd_peer_connected(hook_payload, msg,
-					      &id, &hook_payload->addr,
+					      &id, &connectd_counter,
+					      &hook_payload->addr,
 					      &hook_payload->remote_addr,
 					      &hook_payload->incoming,
 					      &their_features))
 		fatal("Connectd gave bad CONNECT_PEER_CONNECTED message %s",
 		      tal_hex(msg, msg));
+
+	/* When a peer disconnects, we give subds time to clean themselves up
+	 * (this lets connectd ensure they've seen the final messages).  But
+	 * now it's reconnected, we've gotta force them out. */
+	peer_channels_cleanup(ld, &id);
 
 	/* If we're already dealing with this peer, hand off to correct
 	 * subdaemon.  Otherwise, we'll hand to openingd to wait there. */
@@ -1174,28 +1319,36 @@ void peer_connected(struct lightningd *ld, const u8 *msg)
 	if (!peer)
 		peer = new_peer(ld, 0, &id, &hook_payload->addr,
 				hook_payload->incoming);
-	peer->is_connected = true;
+
+	/* We track this, because messages can race between connectd and us.
+	 * For example, we could tell it to attach a subd, but it's actually
+	 * already reconnected: we would tell it again when we read the
+	 * "peer_connected" message, and it would get upset (plus, our first
+	 * subd wouldn't die as expected.  So we echo this back to connectd
+	 * on peer commands, and it knows to ignore if it's wrong. */
+	peer->connectd_counter = connectd_counter;
+
+	/* We mark peer in "connecting" state until hooks have passed. */
+	assert(peer->connected == PEER_DISCONNECTED);
+	peer->connected = PEER_CONNECTING;
+
 	/* Update peer address and direction */
 	peer->addr = hook_payload->addr;
 	peer->connected_incoming = hook_payload->incoming;
+	if (peer->remote_addr)
+		tal_free(peer->remote_addr);
+	peer->remote_addr = NULL;
 	peer_update_features(peer, their_features);
 
 	tal_steal(peer, hook_payload);
 	hook_payload->peer = peer;
 
-	/* Complete any outstanding connect commands: as a hack, we delay here if we
-	 * are going to make them active (so when connect returns, the channels are ready).
-	 * So we also wake these up if the connection dies before that! */
-	if (!peer_subds_pending(peer))
-		connect_succeeded(ld, peer, hook_payload->incoming, &hook_payload->addr);
-
-	/* Can't be opening, since we wouldn't have sent peer_disconnected. */
-	assert(!peer->uncommitted_channel);
-
 	/* Log and update remote_addr for Nat/IP discovery. */
 	if (hook_payload->remote_addr) {
-		log_info(ld->log, "Peer says it sees our address as: %s",
-			 fmt_wireaddr(tmpctx, hook_payload->remote_addr));
+		log_peer_debug(ld->log, &id, "Peer says it sees our address as: %s",
+			       fmt_wireaddr(tmpctx, hook_payload->remote_addr));
+		peer->remote_addr = tal_dup(peer, struct wireaddr,
+					    hook_payload->remote_addr);
 		/* Currently only from peers we have a channel with, until we
 		 * do stuff like probing for remote_addr to a random node. */
 		if (!list_empty(&peer->channels))
@@ -1205,31 +1358,29 @@ void peer_connected(struct lightningd *ld, const u8 *msg)
 	plugin_hook_call_peer_connected(ld, hook_payload);
 }
 
-/* connectd tells us a peer has an interesting message, and hands us an
- * fd to give to the correct subdaemon.  Unlike peer_connected, this is racy:
- * we might have just told it to disconnect peer. */
-void peer_active(struct lightningd *ld, const u8 *msg, int fd)
+/* connectd tells us a peer has a message and we've not already attached
+ * a subd.  Normally this is a race, but it happens for real when opening
+ * a new channel, or referring to a channel we no longer want to talk to
+ * it about. */
+void peer_spoke(struct lightningd *ld, const u8 *msg)
 {
 	struct node_id id;
-	u16 *msgtype;
+	u16 msgtype;
+	u64 connectd_counter;
 	struct channel *channel;
 	struct channel_id channel_id;
 	struct peer *peer;
 	bool dual_fund;
 	u8 *error;
-	struct peer_fd *peer_fd = new_peer_fd(tmpctx, fd);
+	int fds[2];
 
-	if (!fromwire_connectd_peer_active(msg, msg, &id, &msgtype, &channel_id))
-		fatal("Connectd gave bad CONNECTD_PEER_ACTIVE message %s",
+	if (!fromwire_connectd_peer_spoke(msg, &id, &connectd_counter, &msgtype, &channel_id))
+		fatal("Connectd gave bad CONNECTD_PEER_SPOKE message %s",
 		      tal_hex(msg, msg));
 
+	/* We must know it, and it must be the right connectd_id */
 	peer = peer_by_id(ld, &id);
-	if (!peer) {
-		/* This race is possible, but I want to see it in CI. */
-		log_broken(ld->log, "Unknown active peer %s",
-			   type_to_string(tmpctx, struct node_id, &id));
-		return;
-	}
+	assert(peer->connectd_counter == connectd_counter);
 
 	/* Do we know what channel they're talking about? */
 	channel = find_channel_by_id(peer, &channel_id);
@@ -1240,82 +1391,44 @@ void peer_active(struct lightningd *ld, const u8 *msg, int fd)
 			goto send_error;
 		}
 
-		switch (channel->state) {
-		case ONCHAIN:
-		case FUNDING_SPEND_SEEN:
-		case CLOSINGD_COMPLETE:
-			goto channel_is_closed;
-		case CLOSED:
-			/* Channel should not have been loaded */
-			abort();
-		case AWAITING_UNILATERAL: {
-			/* channel->error is not saved in db, so this can
-			 * happen if we restart. */
-			error = towire_errorfmt(tmpctx, &channel->cid,
-						"Awaiting unilateral close");
-			goto send_error;
-		}
-		case DUALOPEND_OPEN_INIT:
-			/* We asked for this, to open? */
-			if (!msgtype
-			    && channel->open_attempt
-			    && channel->open_attempt->open_msg) {
-				if (peer_start_dualopend(peer, peer_fd, channel))
-					subd_send_msg(channel->owner, channel->open_attempt->open_msg);
-				goto subd_setup_done;
+		/* If channel is active, we raced, so ignore this:
+		 * subd will get it soon. */
+		if (channel_active(channel))
+			return;
+
+		if (msgtype == WIRE_CHANNEL_REESTABLISH) {
+			log_debug(channel->log,
+				  "Reestablish on %s channel: using channeld to reply",
+				  channel_state_name(channel));
+			if (socketpair(AF_LOCAL, SOCK_STREAM, 0, fds) != 0) {
+				log_broken(channel->log,
+					   "Failed to create socketpair: %s",
+					   strerror(errno));
+				error = towire_warningfmt(tmpctx, &channel->cid,
+							  "Trouble in paradise?");
+				goto send_error;
 			}
-			/* Fall through. */
-		case DUALOPEND_AWAITING_LOCKIN:
-			assert(!channel->owner);
-			peer_restart_dualopend(peer, peer_fd, channel);
-			goto subd_setup_done;
-		case CHANNELD_AWAITING_LOCKIN:
-		case CHANNELD_NORMAL:
-		case CHANNELD_SHUTTING_DOWN:
-		case CLOSINGD_SIGEXCHANGE:
-			assert(!channel->owner);
-			peer_start_channeld(channel,
-					    peer_fd,
-					    NULL, true,
-					    NULL);
-			goto subd_setup_done;
+			if (peer_start_channeld(channel, new_peer_fd(tmpctx, fds[0]), NULL, true, true)) {
+				goto tell_connectd;
+			}
+			/* FIXME: Send informative error? */
+			close(fds[1]);
+			return;
 		}
-		abort();
+
+		/* Send generic error. */
+		error = towire_errorfmt(tmpctx, &channel_id,
+					"channel in state %s",
+					channel_state_name(channel));
+		goto send_error;
 	}
 
 	dual_fund = feature_negotiated(ld->our_features,
 				       peer->their_features,
 				       OPT_DUAL_FUND);
 
-	/* Did we ask for this? */
-	if (!msgtype) {
-		/* If it was dual_fund, it will have peer_unsaved_channel above */
-		if (dual_fund) {
-			log_broken(ld->log, "Unsolicited active df peer %s?",
-				   type_to_string(tmpctx, struct node_id,
-						  &peer->id));
-		} else {
-			const struct uncommitted_channel *uc
-				= peer->uncommitted_channel;
-
-			if (!uc->open_daemon
-			    && uc->fc
-			    && uc->fc->open_msg) {
-				if (peer_start_openingd(peer, peer_fd)) {
-					subd_send_msg(uc->open_daemon,
-						      uc->fc->open_msg);
-				}
-			} else {
-				log_broken(ld->log, "Unsolicited active peer %s?",
-					   type_to_string(tmpctx, struct node_id,
-							  &peer->id));
-			}
-		}
-		return;
-	}
-
 	/* OK, it's an unknown channel.  Create a new one if they're trying. */
-	switch (*msgtype) {
+	switch (msgtype) {
 	case WIRE_OPEN_CHANNEL:
 		if (dual_fund) {
 			error = towire_errorfmt(tmpctx, &channel_id,
@@ -1328,8 +1441,22 @@ void peer_active(struct lightningd *ld, const u8 *msg, int fd)
 			goto send_error;
 		}
 		peer->uncommitted_channel = new_uncommitted_channel(peer);
-		peer_start_openingd(peer, peer_fd);
-		break;
+		peer->uncommitted_channel->cid = channel_id;
+		if (socketpair(AF_LOCAL, SOCK_STREAM, 0, fds) != 0) {
+			log_broken(ld->log,
+				   "Failed to create socketpair: %s",
+				   strerror(errno));
+			error = towire_warningfmt(tmpctx, &channel_id,
+						  "Trouble in paradise?");
+			goto send_error;
+		}
+		if (peer_start_openingd(peer, new_peer_fd(tmpctx, fds[0]))) {
+			goto tell_connectd;
+		}
+		/* FIXME: Send informative error? */
+		close(fds[1]);
+		return;
+
 	case WIRE_OPEN_CHANNEL2:
 		if (!dual_fund) {
 			error = towire_errorfmt(tmpctx, &channel_id,
@@ -1340,36 +1467,29 @@ void peer_active(struct lightningd *ld, const u8 *msg, int fd)
 					      peer->ld->config.fee_base,
 					      peer->ld->config.fee_per_satoshi);
 		channel->cid = channel_id;
-		peer_start_dualopend(peer, peer_fd, channel);
-		break;
-	default:
-		log_peer_unusual(ld->log, &peer->id,
-				 "Unknown channel %s for %s",
-				 type_to_string(tmpctx, struct channel_id,
-						&channel_id),
-				 peer_wire_name(*msgtype));
-		error = towire_errorfmt(tmpctx, &channel_id,
-					"Unknown channel for %s", peer_wire_name(*msgtype));
-		goto send_error;
-		break;
-	}
-	return;
-
-channel_is_closed:
-	if (msgtype && *msgtype == WIRE_CHANNEL_REESTABLISH) {
-		log_debug(channel->log,
-			  "Reestablish on %s channel: using channeld to reply",
-			  channel_state_name(channel));
-		peer_start_channeld(channel, peer_fd, NULL, true, true);
+		if (socketpair(AF_LOCAL, SOCK_STREAM, 0, fds) != 0) {
+			log_broken(ld->log,
+				   "Failed to create socketpair: %s",
+				   strerror(errno));
+			error = towire_warningfmt(tmpctx, &channel_id,
+						  "Trouble in paradise?");
+			goto send_error;
+		}
+		if (peer_start_dualopend(peer, new_peer_fd(tmpctx, fds[0]), channel))
+			goto tell_connectd;
+		/* FIXME: Send informative error? */
+		close(fds[1]);
 		return;
 	}
 
-	/* Retransmit error if we have one.  Otherwise generic error. */
-	error = channel->error;
-	if (!error)
-		error = towire_errorfmt(tmpctx, &channel_id,
-					"channel in state %s",
-					channel_state_name(channel));
+	/* Weird message?  Log and reply with error. */
+	log_peer_unusual(ld->log, &peer->id,
+			 "Unknown channel %s for %s",
+			 type_to_string(tmpctx, struct channel_id,
+					&channel_id),
+			 peer_wire_name(msgtype));
+	error = towire_errorfmt(tmpctx, &channel_id,
+				"Unknown channel for %s", peer_wire_name(msgtype));
 
 send_error:
 	log_peer_debug(ld->log, &peer->id, "Telling connectd to send error %s",
@@ -1377,14 +1497,16 @@ send_error:
 	/* Get connectd to send error and close. */
 	subd_send_msg(ld->connectd,
 		      take(towire_connectd_peer_final_msg(NULL, &peer->id,
+							  peer->connectd_counter,
 							  error)));
 	return;
 
-subd_setup_done:
-	/* We deferred connect_succeeded to here, so subd would be ready once
-	 * `connect` returns. */
-	if (!peer_subds_pending(peer))
-		connect_succeeded(ld, peer, peer->connected_incoming, &peer->addr);
+tell_connectd:
+	subd_send_msg(ld->connectd,
+		      take(towire_connectd_peer_connect_subd(NULL, &id,
+							     peer->connectd_counter,
+							     &channel_id)));
+	subd_send_fd(ld->connectd, fds[1]);
 }
 
 struct disconnect_command {
@@ -1403,23 +1525,27 @@ static void destroy_disconnect_command(struct disconnect_command *dc)
 void peer_disconnect_done(struct lightningd *ld, const u8 *msg)
 {
 	struct node_id id;
+	u64 connectd_counter;
 	struct disconnect_command *i, *next;
 	struct peer *p;
 
-	if (!fromwire_connectd_peer_disconnect_done(msg, &id))
+	if (!fromwire_connectd_peer_disconnect_done(msg, &id, &connectd_counter))
 		fatal("Connectd gave bad PEER_DISCONNECT_DONE message %s",
 		      tal_hex(msg, msg));
 
 	/* If we still have peer, it's disconnected now */
+	/* FIXME: We should keep peers until it tells us they're disconnected,
+	 * and not free when no more channels. */
 	p = peer_by_id(ld, &id);
 	if (p) {
+		assert(p->connectd_counter == connectd_counter);
 		log_peer_debug(ld->log, &id, "peer_disconnect_done");
-		p->is_connected = false;
-		/* If we only cared about peer because of connectd, free it. */
-		if (list_empty(&p->channels) && !p->uncommitted_channel) {
-			tal_free(p);
-		}
+		p->connected = PEER_DISCONNECTED;
 	}
+
+	/* If you were trying to connect, it failed. */
+	connect_failed_disconnect(ld, &id,
+				  p && !p->connected_incoming ? &p->addr : NULL);
 
 	/* Fire off plugin notifications */
 	notify_disconnect(ld, &id);
@@ -1432,6 +1558,10 @@ void peer_disconnect_done(struct lightningd *ld, const u8 *msg)
 		was_pending(command_success(i->cmd,
 					    json_stream_success(i->cmd)));
 	}
+
+	/* If connection was only thing keeping it, this will delete it. */
+	if (p)
+		maybe_delete_peer(p);
 }
 
 static bool check_funding_details(const struct bitcoin_tx *tx,
@@ -1439,13 +1569,14 @@ static bool check_funding_details(const struct bitcoin_tx *tx,
 				  struct amount_sat funding,
 				  u32 funding_outnum)
 {
-	struct amount_asset asset =
-	    bitcoin_tx_output_get_amount(tx, funding_outnum);
-
-	if (!amount_asset_is_main(&asset))
-		return false;
+	struct amount_asset asset;
 
 	if (funding_outnum >= tx->wtx->num_outputs)
+		return false;
+
+	asset = bitcoin_tx_output_get_amount(tx, funding_outnum);
+
+	if (!amount_asset_is_main(&asset))
 		return false;
 
 	if (!amount_sat_eq(amount_asset_to_sat(&asset), funding))
@@ -1536,8 +1667,9 @@ static enum watch_result funding_depth_cb(struct lightningd *ld,
 	const char *txidstr;
 	struct short_channel_id scid;
 
-	/* Sanity check */
-	if (!check_funding_tx(tx, channel)) {
+	/* Sanity check, but we'll have to make an exception
+	 * for stub channels(1x1x1) */
+	if (!check_funding_tx(tx, channel) && !is_stub_scid(channel->scid)) {
 		channel_internal_error(channel, "Bad tx %s: %s",
 				       type_to_string(tmpctx,
 						      struct bitcoin_txid, txid),
@@ -1592,16 +1724,30 @@ static enum watch_result funding_depth_cb(struct lightningd *ld,
 			return DELETE_WATCH;
 		}
 
-		/* If we restart, we could already have peer->scid from database */
+		/* If we restart, we could already have peer->scid from database,
+		 * we don't need to update scid for stub channels(1x1x1) */
 		if (!channel->scid) {
 			channel->scid = tal(channel, struct short_channel_id);
 			*channel->scid = scid;
 			wallet_channel_save(ld->wallet, channel);
 
-		} else if (!short_channel_id_eq(channel->scid, &scid)) {
-			/* This normally restarts channeld, initialized with updated scid
+		} else if (!short_channel_id_eq(channel->scid, &scid) &&
+			   !is_stub_scid(channel->scid)) {
+			/* Send warning: that will make connectd disconnect, and then we'll
+			 * try to reconnect. */
+			u8 *warning = towire_warningfmt(tmpctx, &channel->cid,
+							"short_channel_id changed to %s (was %s)",
+							short_channel_id_to_str(tmpctx, &scid),
+							short_channel_id_to_str(tmpctx, channel->scid));
+			if (channel->peer->connected != PEER_DISCONNECTED)
+				subd_send_msg(ld->connectd,
+					      take(towire_connectd_peer_final_msg(NULL,
+										  &channel->peer->id,
+										  channel->peer->connectd_counter,
+										  warning)));
+			/* When we restart channeld, it will be initialized with updated scid
 			 * and also adds it (at least our halve_chan) to rtable. */
-			channel_fail_reconnect(channel,
+			channel_fail_transient_delayreconnect(channel,
 					       "short_channel_id changed to %s (was %s)",
 					       short_channel_id_to_str(tmpctx, &scid),
 					       short_channel_id_to_str(tmpctx, channel->scid));
@@ -1683,18 +1829,22 @@ static void json_add_peer(struct lightningd *ld,
 	json_object_start(response, NULL);
 	json_add_node_id(response, "id", &p->id);
 
-	json_add_bool(response, "connected", p->is_connected);
+	json_add_bool(response, "connected", p->connected == PEER_CONNECTED);
 
 	/* If it's not connected, features are unreliable: we don't
 	 * store them in the database, and they would only reflect
 	 * their features *last* time they connected. */
-	if (p->is_connected) {
+	if (p->connected == PEER_CONNECTED) {
 		json_array_start(response, "netaddr");
 		json_add_string(response, NULL,
 				type_to_string(tmpctx,
 					       struct wireaddr_internal,
 					       &p->addr));
 		json_array_end(response);
+		/* If peer reports our IP remote_addr, add that here */
+		if (p->remote_addr)
+			json_add_string(response, "remote_addr",
+					fmt_wireaddr(response, p->remote_addr));
 		json_add_hex_talarr(response, "features", p->their_features);
 	}
 
@@ -1753,6 +1903,57 @@ static const struct json_command listpeers_command = {
 };
 /* Comment added to satisfice AUTODATA */
 AUTODATA(json_command, &listpeers_command);
+
+static void json_add_scb(struct command *cmd,
+			 const char *fieldname,
+			 struct json_stream *response,
+			 struct channel *c)
+{
+	u8 *scb = tal_arr(cmd, u8, 0);
+
+	towire_scb_chan(&scb, c->scb);
+	json_add_hex_talarr(response, fieldname,
+			    scb);
+}
+
+/* This will return a SCB for all the channels currently loaded
+ * in the in-memory channel */
+static struct command_result *json_staticbackup(struct command *cmd,
+					     const char *buffer,
+					     const jsmntok_t *obj UNNEEDED,
+					     const jsmntok_t *params)
+{
+	struct json_stream *response;
+	struct peer *peer;
+	struct channel *channel;
+
+	if (!param(cmd, buffer, params, NULL))
+        return command_param_failed();
+
+	response = json_stream_success(cmd);
+
+	json_array_start(response, "scb");
+
+	list_for_each(&cmd->ld->peers, peer, list)
+		list_for_each(&peer->channels, channel, list){
+			if (!channel->scb)
+				continue;
+			json_add_scb(cmd, NULL, response, channel);
+		}
+	json_array_end(response);
+
+	return command_success(cmd, response);
+}
+
+static const struct json_command staticbackup_command = {
+	"staticbackup",
+	"backup",
+	json_staticbackup,
+	"Returns SCB of all the channels currently present in the DB"
+};
+/* Comment added to satisfice AUTODATA */
+AUTODATA(json_command, &staticbackup_command);
+
 
 struct command_result *
 command_find_channel(struct command *cmd,
@@ -1824,9 +2025,14 @@ static void setup_peer(struct peer *peer, u32 delay)
 	}
 
 	/* Make sure connectd knows to try reconnecting. */
-	if (connect)
-		try_reconnect(peer, peer, delay, &peer->addr);
-
+	if (connect) {
+		/* To delay, make it seem like we just connected. */
+		if (delay > 0) {
+			peer->reconnect_delay = delay;
+			peer->last_connect_attempt = time_now();
+		}
+		try_reconnect(peer, peer, &peer->addr);
+	}
 }
 
 void setup_peers(struct lightningd *ld)
@@ -1896,9 +2102,8 @@ static struct command_result *json_disconnect(struct command *cmd,
 	struct node_id *id;
 	struct disconnect_command *dc;
 	struct peer *peer;
-	struct channel *channel, **channels;
+	struct channel *channel;
 	bool *force;
-	bool disconnected = false;
 
 	if (!param(cmd, buffer, params,
 		   p_req("id", param_node_id, &id),
@@ -1910,7 +2115,7 @@ static struct command_result *json_disconnect(struct command *cmd,
 	if (!peer) {
 		return command_fail(cmd, LIGHTNINGD, "Unknown peer");
 	}
-	if (!peer->is_connected) {
+	if (peer->connected == PEER_DISCONNECTED) {
 		return command_fail(cmd, LIGHTNINGD, "Peer not connected");
 	}
 
@@ -1921,58 +2126,11 @@ static struct command_result *json_disconnect(struct command *cmd,
 				    channel_state_name(channel));
 	}
 
-	/* Careful here!  Disconnecting can free peer! */
-	channels = tal_arr(cmd, struct channel *, 0);
-	list_for_each(&peer->channels, channel, list) {
-		if (!channel->owner)
-			continue;
-		if (!channel->owner->talks_to_peer)
-			continue;
-
-		switch (channel->state) {
-		case DUALOPEND_OPEN_INIT:
-		case CHANNELD_AWAITING_LOCKIN:
-		case CHANNELD_NORMAL:
-		case CHANNELD_SHUTTING_DOWN:
-		case DUALOPEND_AWAITING_LOCKIN:
-		case CLOSINGD_SIGEXCHANGE:
-			tal_arr_expand(&channels, channel);
-			continue;
-		case CLOSINGD_COMPLETE:
-		case AWAITING_UNILATERAL:
-		case FUNDING_SPEND_SEEN:
-		case ONCHAIN:
-		case CLOSED:
-			/* We don't expect these to have owners who connect! */
-			log_broken(channel->log,
-				   "Don't expect owner %s in state %s",
-				   channel->owner->name,
-				   channel_state_name(channel));
-			continue;
-		}
-		abort();
-	}
-
-	/* This can free peer too! */
-	if (peer->uncommitted_channel) {
-		kill_uncommitted_channel(peer->uncommitted_channel,
-					 "disconnect command");
-		disconnected = true;
-	}
-
-	for (size_t i = 0; i < tal_count(channels); i++) {
-		if (channel_unsaved(channels[i]))
-			channel_unsaved_close_conn(channels[i],
-						   "disconnect command");
-		else
-			channel_fail_reconnect(channels[i],
-					       "disconnect command");
-		disconnected = true;
-	}
-
-	/* It's just sitting in connectd? */
-	if (!disconnected)
-		maybe_disconnect_peer(cmd->ld, peer);
+	/* If it's not already disconnecting, tell connectd to disconnect */
+	if (peer->connected == PEER_CONNECTED)
+		subd_send_msg(peer->ld->connectd,
+			      take(towire_connectd_discard_peer(NULL, &peer->id,
+								peer->connectd_counter)));
 
 	/* Connectd tells us when it's finally disconnected */
 	dc = tal(cmd, struct disconnect_command);
@@ -2038,6 +2196,12 @@ static struct command_result *json_getinfo(struct command *cmd,
         json_array_start(response, "address");
         for (size_t i = 0; i < tal_count(cmd->ld->announceable); i++)
             json_add_address(response, NULL, cmd->ld->announceable+i);
+	if (cmd->ld->remote_addr_v4 != NULL &&
+	    !wireaddr_arr_contains(cmd->ld->announceable, cmd->ld->remote_addr_v4))
+		json_add_address(response, NULL, cmd->ld->remote_addr_v4);
+	if (cmd->ld->remote_addr_v6 != NULL &&
+	    !wireaddr_arr_contains(cmd->ld->announceable, cmd->ld->remote_addr_v6))
+		json_add_address(response, NULL, cmd->ld->remote_addr_v6);
         json_array_end(response);
 
         /* This is what we're actually bound to. */
@@ -2837,7 +3001,7 @@ void peer_dev_memleak(struct lightningd *ld, struct leak_detect *leaks)
 
 	list_for_each(&ld->peers, p, list) {
 		struct channel *c;
-		if (p->uncommitted_channel) {
+		if (p->uncommitted_channel && p->uncommitted_channel->open_daemon) {
 			struct subd *openingd = p->uncommitted_channel->open_daemon;
 			start_leak_request(subd_req(openingd, openingd,
 						    take(towire_openingd_dev_memleak(NULL)),

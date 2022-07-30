@@ -1,5 +1,6 @@
 #include "config.h"
 #include <bitcoin/feerate.h>
+#include <ccan/tal/str/str.h>
 #include <common/key_derive.h>
 #include <common/type_to_string.h>
 #include <db/exec.h>
@@ -8,6 +9,7 @@
 #include <inttypes.h>
 #include <lightningd/chaintopology.h>
 #include <lightningd/channel.h>
+#include <lightningd/channel_control.h>
 #include <lightningd/coin_mvts.h>
 #include <lightningd/hsm_control.h>
 #include <lightningd/onchain_control.h>
@@ -622,13 +624,23 @@ enum watch_result onchaind_funding_spent(struct channel *channel,
 
 	channel_fail_permanent(channel, reason, "Funding transaction spent");
 
+	/* If we haven't posted the open event yet, post an open */
+	if (!channel->scid || !channel->remote_funding_locked) {
+		u32 blkh;
+		/* Blockheight will be zero if it's not in chain */
+		blkh = wallet_transaction_height(channel->peer->ld->wallet,
+						 &channel->funding.txid);
+		channel_record_open(channel, blkh, true);
+	}
+
+
 	/* We could come from almost any state. */
 	/* NOTE(mschmoock) above comment is wrong, since we failed above! */
 	channel_set_state(channel,
 			  channel->state,
 			  FUNDING_SPEND_SEEN,
 			  reason,
-			  "Onchain funding spend");
+			  tal_fmt(tmpctx, "Onchain funding spend"));
 
 	hsmfd = hsm_get_client_fd(ld, &channel->peer->id,
 				  channel->dbid,
@@ -669,8 +681,17 @@ enum watch_result onchaind_funding_spent(struct channel *channel,
 			   channel->final_key_idx);
 		return KEEP_WATCHING;
 	}
-	/* This could be a mutual close, but it doesn't matter. */
-	bitcoin_txid(channel->last_tx, &our_last_txid);
+
+	/* This could be a mutual close, but it doesn't matter.
+	 * We don't need this for stub channels as well */
+	if (!is_stub_scid(channel->scid))
+		bitcoin_txid(channel->last_tx, &our_last_txid);
+	else
+	/* Dummy txid for stub channel to make valgrind happy. */
+		bitcoin_txid_from_hex("80cea306607b708a03a1854520729d"
+				"a884e4317b7b51f3d4a622f88176f5e034",
+				64,
+				&our_last_txid);
 
 	/* We try to get the feerate for each transaction type, 0 if estimation
 	 * failed. */

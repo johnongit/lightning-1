@@ -7,8 +7,8 @@
 #include <ccan/tal/str/str.h>
 #include <common/htlc_tx.h>
 #include <common/json_command.h>
+#include <common/json_param.h>
 #include <common/memleak.h>
-#include <common/param.h>
 #include <common/timeout.h>
 #include <common/type_to_string.h>
 #include <db/exec.h>
@@ -18,7 +18,6 @@
 #include <lightningd/coin_mvts.h>
 #include <lightningd/gossip_control.h>
 #include <lightningd/io_loop_with_timers.h>
-#include <lightningd/json.h>
 #include <lightningd/jsonrpc.h>
 #include <lightningd/lightningd.h>
 #include <lightningd/log.h>
@@ -38,6 +37,7 @@ static void maybe_completed_init(struct chain_topology *topo)
 		return;
 	if (!topo->root)
 		return;
+	log_debug(topo->ld->log, "io_break: %s", __func__);
 	io_break(topo);
 }
 
@@ -308,33 +308,6 @@ static void watch_for_utxo_reconfirmation(struct chain_topology *topo,
 				   &unconfirmed[i]->outpoint.txid,
 				   closeinfo_txid_confirmed));
 	}
-}
-
-const char *feerate_name(enum feerate feerate)
-{
-	switch (feerate) {
-	case FEERATE_OPENING: return "opening";
-	case FEERATE_MUTUAL_CLOSE: return "mutual_close";
-	case FEERATE_UNILATERAL_CLOSE: return "unilateral_close";
-	case FEERATE_DELAYED_TO_US: return "delayed_to_us";
-	case FEERATE_HTLC_RESOLUTION: return "htlc_resolution";
-	case FEERATE_PENALTY: return "penalty";
-	case FEERATE_MIN: return "min_acceptable";
-	case FEERATE_MAX: return "max_acceptable";
-	}
-	abort();
-}
-
-struct command_result *param_feerate_estimate(struct command *cmd,
-					      u32 **feerate_per_kw,
-					      enum feerate feerate)
-{
-	*feerate_per_kw = tal(cmd, u32);
-	**feerate_per_kw = try_get_feerate(cmd->ld->topology, feerate);
-	if (!**feerate_per_kw)
-		return command_fail(cmd, LIGHTNINGD, "Cannot estimate fees");
-
-	return NULL;
 }
 
 /* Mutual recursion via timer. */
@@ -618,11 +591,11 @@ void topology_add_sync_waiter_(const tal_t *ctx,
 static void updates_complete(struct chain_topology *topo)
 {
 	if (!bitcoin_blkid_eq(&topo->tip->blkid, &topo->prev_tip)) {
-		/* Tell lightningd about new block. */
-		notify_new_block(topo->bitcoind->ld, topo->tip->height);
-
 		/* Tell watch code to re-evaluate all txs. */
 		watch_topology_changed(topo);
+
+		/* Tell lightningd about new block. */
+		notify_new_block(topo->bitcoind->ld, topo->tip->height);
 
 		/* Maybe need to rebroadcast. */
 		rebroadcast_txs(topo, NULL);
@@ -1087,6 +1060,7 @@ static void retry_check_chain(struct chain_topology *topo)
 void setup_topology(struct chain_topology *topo,
 		    u32 min_blockheight, u32 max_blockheight)
 {
+	void *ret;
 	memset(&topo->feerate, 0, sizeof(topo->feerate));
 
 	topo->min_blockheight = min_blockheight;
@@ -1107,7 +1081,9 @@ void setup_topology(struct chain_topology *topo,
 	start_fee_estimate(topo);
 
 	/* Once it gets initial block, it calls io_break() and we return. */
-	io_loop_with_timers(topo->ld);
+	ret = io_loop_with_timers(topo->ld);
+	assert(ret == topo);
+	log_debug(topo->ld->log, "io_loop_with_timers: %s", __func__);
 }
 
 void begin_topology(struct chain_topology *topo)

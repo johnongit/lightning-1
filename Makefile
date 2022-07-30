@@ -13,6 +13,8 @@ SUPPRESS_OUTPUT :=
 endif
 
 DISTRO=$(shell lsb_release -is 2>/dev/null || echo unknown)-$(shell lsb_release -rs 2>/dev/null || echo unknown)
+OS=$(shell uname -s)
+ARCH=$(shell uname -m)
 # Changing this could break installs!
 PKGNAME = c-lightning
 
@@ -20,8 +22,8 @@ PKGNAME = c-lightning
 CCANDIR := ccan
 
 # Where we keep the BOLT RFCs
-BOLTDIR := ../lightning-rfc/
-DEFAULT_BOLTVERSION := e60d594abf436e768116684080997a8d4f960263
+BOLTDIR := ../bolts/
+DEFAULT_BOLTVERSION := 105c2e5e9f17c68e8c19dc4ca548600a0b8f66f0
 # Can be overridden on cmdline.
 BOLTVERSION := $(DEFAULT_BOLTVERSION)
 
@@ -79,7 +81,11 @@ endif
 PYTEST_OPTS := -v -p no:logging $(PYTEST_OPTS)
 MY_CHECK_PYTHONPATH=$${PYTHONPATH}$${PYTHONPATH:+:}$(shell pwd)/contrib/pyln-client:$(shell pwd)/contrib/pyln-testing:$(shell pwd)/contrib/pyln-proto/:$(shell pwd)/external/lnprototest:$(shell pwd)/contrib/pyln-spec/bolt1:$(shell pwd)/contrib/pyln-spec/bolt2:$(shell pwd)/contrib/pyln-spec/bolt4:$(shell pwd)/contrib/pyln-spec/bolt7
 # Collect generated python files to be excluded from lint checks
-PYTHON_GENERATED=
+PYTHON_GENERATED= \
+	contrib/pyln-testing/pyln/testing/primitives_pb2.py \
+	contrib/pyln-testing/pyln/testing/node_pb2_grpc.py \
+	contrib/pyln-testing/pyln/testing/node_pb2.py \
+	contrib/pyln-testing/pyln/testing/grpc2py.py
 
 # Options to pass to cppcheck. Mostly used to exclude files that are
 # generated with external tools that we don't have control over
@@ -90,6 +96,7 @@ FEATURES :=
 
 CCAN_OBJS :=					\
 	ccan-asort.o				\
+	ccan-base64.o				\
 	ccan-bitmap.o				\
 	ccan-bitops.o				\
 	ccan-breakpoint.o			\
@@ -125,6 +132,8 @@ CCAN_OBJS :=					\
 	ccan-ptr_valid.o			\
 	ccan-rbuf.o				\
 	ccan-read_write_all.o			\
+	ccan-rune-coding.o			\
+	ccan-rune-rune.o			\
 	ccan-str-base32.o			\
 	ccan-str-hex.o				\
 	ccan-str.o				\
@@ -193,6 +202,8 @@ CCAN_HEADERS :=						\
 	$(CCANDIR)/ccan/ptrint/ptrint.h			\
 	$(CCANDIR)/ccan/rbuf/rbuf.h			\
 	$(CCANDIR)/ccan/read_write_all/read_write_all.h	\
+	$(CCANDIR)/ccan/rune/internal.h			\
+	$(CCANDIR)/ccan/rune/rune.h			\
 	$(CCANDIR)/ccan/short_types/short_types.h	\
 	$(CCANDIR)/ccan/str/base32/base32.h		\
 	$(CCANDIR)/ccan/str/hex/hex.h			\
@@ -231,8 +242,21 @@ ALL_C_HEADERS := header_versions_gen.h version_gen.h
 # Extra (non C) targets that should be built by default.
 DEFAULT_TARGETS :=
 
+# M1 macos machines with homebrew will install the native libraries in
+# /opt/homebrew instead of /usr/local, most likely because they
+# emulate x86_64 compatibility via Rosetta, and wanting to keep the
+# libraries separate. This however means we also need to switch out
+# the paths accordingly when we detect we're on an M1 macos machine.
+ifeq ("$(OS)-$(ARCH)", "Darwin-arm64")
+CPATH := /opt/homebrew/include
+LIBRARY_PATH := /opt/homebrew/lib
+else
+CPATH := /usr/local/include
+LIBRARY_PATH := /usr/local/lib
+endif
+
 CPPFLAGS += -DBINTOPKGLIBEXECDIR="\"$(shell sh tools/rel.sh $(bindir) $(pkglibexecdir))\""
-CFLAGS = $(CPPFLAGS) $(CWARNFLAGS) $(CDEBUGFLAGS) $(COPTFLAGS) -I $(CCANDIR) $(EXTERNAL_INCLUDE_FLAGS) -I . -I/usr/local/include $(SQLITE3_CFLAGS) $(POSTGRES_INCLUDE) $(FEATURES) $(COVFLAGS) $(DEV_CFLAGS) -DSHACHAIN_BITS=48 -DJSMN_PARENT_LINKS $(PIE_CFLAGS) $(COMPAT_CFLAGS) -DBUILD_ELEMENTS=1
+CFLAGS = $(CPPFLAGS) $(CWARNFLAGS) $(CDEBUGFLAGS) $(COPTFLAGS) -I $(CCANDIR) $(EXTERNAL_INCLUDE_FLAGS) -I . -I$(CPATH) $(SQLITE3_CFLAGS) $(POSTGRES_INCLUDE) $(FEATURES) $(COVFLAGS) $(DEV_CFLAGS) -DSHACHAIN_BITS=48 -DJSMN_PARENT_LINKS $(PIE_CFLAGS) $(COMPAT_CFLAGS) -DBUILD_ELEMENTS=1
 # If CFLAGS is already set in the environment of make (to whatever value, it
 # does not matter) then it would export it to subprocesses with the above value
 # we set, including CWARNFLAGS which by default contains -Wall -Werror. This
@@ -250,9 +274,9 @@ ifeq ($(STATIC),1)
 # For MacOS, Jacob Rapoport <jacob@rumblemonkey.com> changed this to:
 #  -L/usr/local/lib -Wl,-lgmp -lsqlite3 -lz -Wl,-lm -lpthread -ldl $(COVFLAGS)
 # But that doesn't static link.
-LDLIBS = -L/usr/local/lib -Wl,-dn -lgmp $(SQLITE3_LDLIBS) -lz -Wl,-dy -lm -lpthread -ldl $(COVFLAGS)
+LDLIBS = -L$(CPATH) -Wl,-dn -lgmp $(SQLITE3_LDLIBS) -lz -Wl,-dy -lm -lpthread -ldl $(COVFLAGS)
 else
-LDLIBS = -L/usr/local/lib -lm -lgmp $(SQLITE3_LDLIBS) -lz $(COVFLAGS)
+LDLIBS = -L$(CPATH) -lm -lgmp $(SQLITE3_LDLIBS) -lz $(COVFLAGS)
 endif
 
 # If we have the postgres client library we need to link against it as well
@@ -293,13 +317,19 @@ endif
 ifeq ($(SUPPRESS_GENERATION),1)
 SHA256STAMP_CHANGED = false
 SHA256STAMP = exit 1
+SHA256STAMP_CHANGED_ALL = false
+SHA256STAMP_ALL = exit 1
 else
 # Git doesn't maintain timestamps, so we only regen if sources actually changed:
 # We place the SHA inside some generated files so we can tell if they need updating.
 # Usage: $(call SHA256STAMP_CHANGED)
-SHA256STAMP_CHANGED = [ x"`sed -n 's/.*SHA256STAMP:\([a-f0-9]*\).*/\1/p' $@ 2>/dev/null`" != x"`cat $(sort $(filter-out FORCE,$^)) | $(SHA256SUM) | cut -c1-64`" ]
+SHA256STAMP_CHANGED = [ x"`sed -n 's/.*SHA256STAMP:\([a-f0-9]*\).*/\1/p' $@ 2>/dev/null`" != x"`cat $(sort $(filter-out FORCE,$<)) | $(SHA256SUM) | cut -c1-64`" ]
 # Usage: $(call SHA256STAMP,commentprefix,commentpostfix)
-SHA256STAMP = echo "$(1) SHA256STAMP:"`cat $(sort $(filter-out FORCE,$^)) | $(SHA256SUM) | cut -c1-64`"$(2)" >> $@
+SHA256STAMP = echo "$(1) SHA256STAMP:"`cat $(sort $(filter-out FORCE,$<)) | $(SHA256SUM) | cut -c1-64`"$(2)" >> $@
+
+SHA256STAMP_CHANGED_ALL = [ x"`sed -n 's/.*SHA256STAMP:\([a-f0-9]*\).*/\1/p' $@ 2>/dev/null`" != x"`cat $(sort $(filter-out FORCE,$^)) | $(SHA256SUM) | cut -c1-64`" ]
+# Usage: $(call SHA256STAMP,commentprefix,commentpostfix)
+SHA256STAMP_ALL = echo "$(1) SHA256STAMP:"`cat $(sort $(filter-out FORCE,$^)) | $(SHA256SUM) | cut -c1-64`"$(2)" >> $@
 endif
 
 # generate-wire.py --page [header|impl] hdrfilename wirename < csv > file
@@ -349,7 +379,7 @@ include devtools/Makefile
 include tools/Makefile
 include plugins/Makefile
 include tests/plugins/Makefile
-include contrib/libhsmd_python/Makefile
+
 ifneq ($(FUZZING),0)
 	include tests/fuzz/Makefile
 endif
@@ -357,15 +387,19 @@ ifneq ($(RUST),0)
 	include cln-rpc/Makefile
 	include cln-grpc/Makefile
 
-GRPC_GEN = tests/node_pb2.py \
-	tests/node_pb2_grpc.py \
-	tests/primitives_pb2.py
+GRPC_GEN = contrib/pyln-testing/pyln/testing/node_pb2.py \
+	contrib/pyln-testing/pyln/testing/node_pb2_grpc.py \
+	contrib/pyln-testing/pyln/testing/primitives_pb2.py
 
 ALL_TEST_GEN += $(GRPC_GEN)
 
 $(GRPC_GEN): cln-grpc/proto/node.proto cln-grpc/proto/primitives.proto
-	python -m grpc_tools.protoc -I cln-grpc/proto cln-grpc/proto/node.proto --python_out=tests/ --grpc_python_out=tests/ --experimental_allow_proto3_optional
-	python -m grpc_tools.protoc -I cln-grpc/proto cln-grpc/proto/primitives.proto --python_out=tests/ --grpc_python_out=tests/ --experimental_allow_proto3_optional
+	python -m grpc_tools.protoc -I cln-grpc/proto cln-grpc/proto/node.proto --python_out=contrib/pyln-testing/pyln/testing/ --grpc_python_out=contrib/pyln-testing/pyln/testing/ --experimental_allow_proto3_optional
+	python -m grpc_tools.protoc -I cln-grpc/proto cln-grpc/proto/primitives.proto --python_out=contrib/pyln-testing/pyln/testing/ --experimental_allow_proto3_optional
+	# The compiler assumes that the proto files are in the same
+	# directory structure as the generated files will be. Since we
+	# don't do that we need to path the files up.
+	find contrib/pyln-testing/pyln/testing/ -type f -name "*.py" -print0 | xargs -0 sed -i 's/^import \(.*\)_pb2 as .*__pb2/from . import \1_pb2 as \1__pb2/g'
 
 endif
 
@@ -490,7 +524,7 @@ check-markdown:
 check-spelling:
 	@tools/check-spelling.sh
 
-PYSRC=$(shell git ls-files "*.py" | grep -v /text.py) contrib/pylightning/lightning-pay
+PYSRC=$(shell git ls-files "*.py" | grep -v /text.py)
 
 # Some tests in pyln will need to find lightningd to run, so have a PATH that
 # allows it to find that
@@ -550,7 +584,18 @@ full-check: check check-source
 #
 # Do not run on your development tree since it will complain if you
 # have a dirty tree.
-check-gen-updated: $(ALL_GEN_HEADERS) $(ALL_GEN_SOURCES) wallet/statements_gettextgen.po $(MANPAGES)
+CHECK_GEN_ALL = \
+	$(CLN_GRPC_GENALL) \
+	$(CLN_RPC_GENALL) \
+	$(MANPAGES) \
+	$(WALLET_DB_QUERIES) \
+	$(PYTHON_GENERATED) \
+	$(ALL_GEN_HEADERS) \
+	$(ALL_GEN_SOURCES) \
+	wallet/statements_gettextgen.po \
+	.msggen.json
+
+check-gen-updated:  $(CHECK_GEN_ALL)
 	@echo "Checking for generated files being changed by make"
 	git diff --exit-code HEAD $?
 
@@ -595,8 +640,12 @@ endif
 header_versions_gen.h: tools/headerversions
 	@tools/headerversions $@
 
+# We make a static library, this way linker can discard unused parts.
+libccan.a: $(CCAN_OBJS)
+	@$(call VERBOSE, "ar $@", $(AR) r $@ $(CCAN_OBJS))
+
 # All binaries require the external libs, ccan and system library versions.
-$(ALL_PROGRAMS) $(ALL_TEST_PROGRAMS) $(ALL_FUZZ_TARGETS): $(EXTERNAL_LIBS) $(CCAN_OBJS)
+$(ALL_PROGRAMS) $(ALL_TEST_PROGRAMS) $(ALL_FUZZ_TARGETS): $(EXTERNAL_LIBS) libccan.a
 
 # Each test program depends on its own object.
 $(ALL_TEST_PROGRAMS) $(ALL_FUZZ_TARGETS): %: %.o
@@ -606,13 +655,13 @@ $(ALL_TEST_PROGRAMS) $(ALL_FUZZ_TARGETS): %: %.o
 # uses some ccan modules internally).  We want to rely on -lwallycore etc.
 # (as per EXTERNAL_LDLIBS) so we filter them out here.
 $(ALL_PROGRAMS) $(ALL_TEST_PROGRAMS):
-	@$(call VERBOSE, "ld $@", $(LINK.o) $(filter-out %.a,$^) $(LOADLIBES) $(EXTERNAL_LDLIBS) $(LDLIBS) -o $@)
+	@$(call VERBOSE, "ld $@", $(LINK.o) $(filter-out %.a,$^) $(LOADLIBES) $(EXTERNAL_LDLIBS) $(LDLIBS) libccan.a -o $@)
 
 # We special case the fuzzing target binaries, as they need to link against libfuzzer,
 # which brings its own main().
 FUZZ_LDFLAGS = -fsanitize=fuzzer
 $(ALL_FUZZ_TARGETS):
-	@$(call VERBOSE, "ld $@", $(LINK.o) $(filter-out %.a,$^) $(LOADLIBES) $(EXTERNAL_LDLIBS) $(LDLIBS) $(FUZZ_LDFLAGS) -o $@)
+	@$(call VERBOSE, "ld $@", $(LINK.o) $(filter-out %.a,$^) $(LOADLIBES) $(EXTERNAL_LDLIBS) $(LDLIBS) libccan.a $(FUZZ_LDFLAGS) -o $@)
 
 
 # Everything depends on the CCAN headers, and Makefile
@@ -652,7 +701,7 @@ obsclean:
 	$(RM) gen_*.h */gen_*.[ch] */*/gen_*.[ch]
 
 clean: obsclean
-	$(RM) $(CCAN_OBJS) $(CDUMP_OBJS) $(ALL_OBJS)
+	$(RM) libccan.a $(CCAN_OBJS) $(CDUMP_OBJS) $(ALL_OBJS)
 	$(RM) $(ALL_GEN_HEADERS) $(ALL_GEN_SOURCES)
 	$(RM) $(ALL_PROGRAMS)
 	$(RM) $(ALL_TEST_PROGRAMS)
@@ -672,7 +721,7 @@ update-mocks:
 	@echo Need DEVELOPER=1 and EXPERIMENTAL_FEATURES=1 to regenerate mocks >&2; exit 1
 endif
 
-$(ALL_TEST_PROGRAMS:%=update-mocks/%.c): $(ALL_GEN_HEADERS) $(EXTERNAL_LIBS) $(CCAN_OBJS) ccan/ccan/cdump/tools/cdump-enumstr config.vars
+$(ALL_TEST_PROGRAMS:%=update-mocks/%.c): $(ALL_GEN_HEADERS) $(EXTERNAL_LIBS) libccan.a ccan/ccan/cdump/tools/cdump-enumstr config.vars
 
 update-mocks/%: %
 	@MAKE=$(MAKE) tools/update-mocks.sh "$*" $(SUPPRESS_OUTPUT)
@@ -804,6 +853,8 @@ endif
 
 ccan-breakpoint.o: $(CCANDIR)/ccan/breakpoint/breakpoint.c
 	@$(call VERBOSE, "cc $<", $(CC) $(CFLAGS) -c -o $@ $<)
+ccan-base64.o: $(CCANDIR)/ccan/base64/base64.c
+	@$(call VERBOSE, "cc $<", $(CC) $(CFLAGS) -c -o $@ $<)
 ccan-tal.o: $(CCANDIR)/ccan/tal/tal.c
 	@$(call VERBOSE, "cc $<", $(CC) $(CFLAGS) -c -o $@ $<)
 ccan-tal-str.o: $(CCANDIR)/ccan/tal/str/str.c
@@ -903,4 +954,8 @@ ccan-json_escape.o: $(CCANDIR)/ccan/json_escape/json_escape.c
 ccan-json_out.o: $(CCANDIR)/ccan/json_out/json_out.c
 	@$(call VERBOSE, "cc $<", $(CC) $(CFLAGS) -c -o $@ $<)
 ccan-closefrom.o: $(CCANDIR)/ccan/closefrom/closefrom.c
+	@$(call VERBOSE, "cc $<", $(CC) $(CFLAGS) -c -o $@ $<)
+ccan-rune-rune.o: $(CCANDIR)/ccan/rune/rune.c
+	@$(call VERBOSE, "cc $<", $(CC) $(CFLAGS) -c -o $@ $<)
+ccan-rune-coding.o: $(CCANDIR)/ccan/rune/coding.c
 	@$(call VERBOSE, "cc $<", $(CC) $(CFLAGS) -c -o $@ $<)

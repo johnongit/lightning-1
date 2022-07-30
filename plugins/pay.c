@@ -10,8 +10,8 @@
 #include <ccan/tal/str/str.h>
 #include <common/bolt12_merkle.h>
 #include <common/gossmap.h>
+#include <common/json_param.h>
 #include <common/json_stream.h>
-#include <common/json_tok.h>
 #include <common/memleak.h>
 #include <common/pseudorand.h>
 #include <common/type_to_string.h>
@@ -399,11 +399,10 @@ static void add_new_entry(struct json_stream *ret,
 	/* This is only tallied for pending and successful payments, not
 	 * failures. */
 	if (pm->amount != NULL && pm->num_nonfailed_parts > 0)
-		json_add_string(ret, "amount_msat",
-				fmt_amount_msat(tmpctx, *pm->amount));
+		json_add_amount_msat_only(ret, "amount_msat", *pm->amount);
 
-	json_add_string(ret, "amount_sent_msat",
-			fmt_amount_msat(tmpctx, pm->amount_sent));
+	json_add_amount_msat_only(ret, "amount_sent_msat",
+				  pm->amount_sent);
 
 	if (pm->num_nonfailed_parts > 1)
 		json_add_u64(ret, "number_of_parts",
@@ -642,7 +641,9 @@ static void payment_add_attempt(struct json_stream *s, const char *fieldname, st
 		json_add_string(s, "failreason", p->failreason);
 
 	json_add_u64(s, "partid", p->partid);
-	json_add_amount_msat_only(s, "amount", p->amount);
+	if (deprecated_apis)
+		json_add_amount_msat_only(s, "amount", p->amount);
+	json_add_amount_msat_only(s, "amount_msat", p->amount);
 	if (p->parent != NULL)
 		json_add_u64(s, "parent_partid", p->parent->partid);
 
@@ -957,7 +958,7 @@ static struct command_result *json_pay(struct command *cmd,
 	if (!param(cmd, buf, params,
 		   /* FIXME: parameter should be invstring now */
 		   p_req("bolt11", param_string, &b11str),
-		   p_opt("msatoshi", param_msat, &msat),
+		   p_opt("amount_msat|msatoshi", param_msat, &msat),
 		   p_opt("label", param_string, &label),
 		   p_opt_def("riskfactor", param_millionths,
 			     &riskfactor_millionths, 10000000),

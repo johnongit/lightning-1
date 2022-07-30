@@ -35,7 +35,7 @@ void ecdh(const struct pubkey *point UNNEEDED, struct secret *ss UNNEEDED)
 { fprintf(stderr, "ecdh called!\n"); abort(); }
 /* Generated stub for gossip_store_add */
 u64 gossip_store_add(struct gossip_store *gs UNNEEDED, const u8 *gossip_msg UNNEEDED,
-		     u32 timestamp UNNEEDED, bool push UNNEEDED, const u8 *addendum UNNEEDED)
+		     u32 timestamp UNNEEDED, bool push UNNEEDED, bool spam UNNEEDED, const u8 *addendum UNNEEDED)
 { fprintf(stderr, "gossip_store_add called!\n"); abort(); }
 /* Generated stub for gossip_store_add_private_update */
 u64 gossip_store_add_private_update(struct gossip_store *gs UNNEEDED, const u8 *update UNNEEDED)
@@ -59,22 +59,6 @@ const u8 *gossip_store_get_private_update(const tal_t *ctx UNNEEDED,
 void gossip_store_mark_channel_deleted(struct gossip_store *gs UNNEEDED,
 				       const struct short_channel_id *scid UNNEEDED)
 { fprintf(stderr, "gossip_store_mark_channel_deleted called!\n"); abort(); }
-/* Generated stub for json_add_member */
-void json_add_member(struct json_stream *js UNNEEDED,
-		     const char *fieldname UNNEEDED,
-		     bool quote UNNEEDED,
-		     const char *fmt UNNEEDED, ...)
-{ fprintf(stderr, "json_add_member called!\n"); abort(); }
-/* Generated stub for json_member_direct */
-char *json_member_direct(struct json_stream *js UNNEEDED,
-			 const char *fieldname UNNEEDED, size_t extra UNNEEDED)
-{ fprintf(stderr, "json_member_direct called!\n"); abort(); }
-/* Generated stub for json_object_end */
-void json_object_end(struct json_stream *js UNNEEDED)
-{ fprintf(stderr, "json_object_end called!\n"); abort(); }
-/* Generated stub for json_object_start */
-void json_object_start(struct json_stream *ks UNNEEDED, const char *fieldname UNNEEDED)
-{ fprintf(stderr, "json_object_start called!\n"); abort(); }
 /* Generated stub for memleak_add_helper_ */
 void memleak_add_helper_(const tal_t *p UNNEEDED, void (*cb)(struct htable *memtable UNNEEDED,
 						    const tal_t *)){ }

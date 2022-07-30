@@ -6,10 +6,8 @@
 #include <common/bech32.h>
 #include <common/configdir.h>
 #include <common/json_command.h>
-#include <common/json_helpers.h>
-#include <common/json_tok.h>
+#include <common/json_param.h>
 #include <common/key_derive.h>
-#include <common/param.h>
 #include <common/psbt_keypath.h>
 #include <common/psbt_open.h>
 #include <common/type_to_string.h>
@@ -344,9 +342,8 @@ static struct command_result *json_listfunds(struct command *cmd,
 				continue;
 			json_object_start(response, NULL);
 			json_add_node_id(response, "peer_id", &p->id);
-			/* Mirrors logic in listpeers */
 			json_add_bool(response, "connected",
-				      channel_active(c) && c->connected);
+				      channel_is_connected(c));
 			json_add_string(response, "state",
 					channel_state_name(c));
 			if (c->scid)
@@ -558,9 +555,7 @@ static void json_transaction_details(struct json_stream *response,
 			json_object_start(response, NULL);
 
 			json_add_u32(response, "index", i);
-			if (deprecated_apis)
-				json_add_amount_sat_only(response, "satoshis", sat);
-			json_add_amount_sat_only(response, "msat", sat);
+			json_add_amount_sats_deprecated(response, "msat", "amount_msat", sat);
 
 #if EXPERIMENTAL_FEATURES
 			struct tx_annotation *ann = &tx->output_annotations[i];

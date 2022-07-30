@@ -6,11 +6,9 @@
 #include <common/configdir.h>
 #include <common/ecdh.h>
 #include <common/json_command.h>
-#include <common/json_helpers.h>
-#include <common/json_tok.h>
+#include <common/json_param.h>
 #include <common/onion.h>
 #include <common/onionreply.h>
-#include <common/param.h>
 #include <common/timeout.h>
 #include <common/type_to_string.h>
 #include <db/exec.h>
@@ -538,11 +536,11 @@ static void rcvd_htlc_reply(struct subd *subd, const u8 *msg, const int *fds UNU
 			fail_in_htlc(hout->in, failonion);
 
 			/* here we haven't called connect_htlc_out(),
-			 * so set htlc field with NULL */
+			 * so set htlc field with NULL (db wants it to exist!) */
 			wallet_forwarded_payment_add(ld->wallet,
 					 hout->in,
 					 get_onion_style(hout->in),
-					 NULL, NULL,
+					 channel_scid_or_local_alias(hout->key.channel), NULL,
 					 FORWARD_LOCAL_FAILED,
 						     fromwire_peektype(hout->failmsg));
 		}
@@ -702,7 +700,7 @@ static void forward_htlc(struct htlc_in *hin,
 		local_fail_in_htlc(hin, take(towire_unknown_next_peer(NULL)));
 		wallet_forwarded_payment_add(hin->key.channel->peer->ld->wallet,
 					 hin, get_onion_style(hin),
-					 next ? next->scid : NULL, NULL,
+					 scid, NULL,
 					 FORWARD_LOCAL_FAILED,
 					 WIRE_UNKNOWN_NEXT_PEER);
 		return;
@@ -797,7 +795,7 @@ static void forward_htlc(struct htlc_in *hin,
 fail:
 	local_fail_in_htlc(hin, failmsg);
 	wallet_forwarded_payment_add(ld->wallet,
-				 hin, get_onion_style(hin), next->scid, hout,
+				 hin, get_onion_style(hin), scid, hout,
 				 FORWARD_LOCAL_FAILED,
 				 fromwire_peektype(failmsg));
 }
@@ -1044,7 +1042,11 @@ static void htlc_accepted_hook_serialize(struct htlc_accepted_hook_payload *p,
 		if (p->payload->forward_channel)
 			json_add_short_channel_id(s, "short_channel_id",
 						  p->payload->forward_channel);
-		json_add_amount_msat_only(s, "forward_amount",
+		if (deprecated_apis)
+			json_add_string(s, "forward_amount",
+					fmt_amount_msat(tmpctx,
+							p->payload->amt_to_forward));
+		json_add_amount_msat_only(s, "forward_msat",
 					  p->payload->amt_to_forward);
 		json_add_u32(s, "outgoing_cltv_value", p->payload->outgoing_cltv);
 		/* These are specified together in TLV, so only print total_msat
@@ -1065,7 +1067,13 @@ static void htlc_accepted_hook_serialize(struct htlc_accepted_hook_payload *p,
 	json_object_end(s);
 
 	json_object_start(s, "htlc");
-	json_add_amount_msat_only(s, "amount", hin->msat);
+	json_add_short_channel_id(
+	    s, "short_channel_id",
+	    channel_scid_or_local_alias(hin->key.channel));
+	json_add_u64(s, "id", hin->key.id);
+	if (deprecated_apis)
+		json_add_amount_msat_only(s, "amount", hin->msat);
+	json_add_amount_msat_only(s, "amount_msat", hin->msat);
 	json_add_u32(s, "cltv_expiry", expiry);
 	json_add_s32(s, "cltv_expiry_relative", expiry - blockheight);
 	json_add_sha256(s, "payment_hash", &hin->payment_hash);
@@ -1327,7 +1335,7 @@ static void fulfill_our_htlc_out(struct channel *channel, struct htlc_out *hout,
 		fulfill_htlc(hout->in, preimage);
 		wallet_forwarded_payment_add(ld->wallet, hout->in,
 					     get_onion_style(hout->in),
-					     hout->key.channel->scid, hout,
+					     channel_scid_or_local_alias(hout->key.channel), hout,
 					     FORWARD_SETTLED, 0);
 	}
 }
@@ -1455,7 +1463,7 @@ static bool peer_failed_our_htlc(struct channel *channel,
 	if (hout->in)
 		wallet_forwarded_payment_add(ld->wallet, hout->in,
 					     get_onion_style(hout->in),
-					     channel->scid,
+					     channel_scid_or_local_alias(channel),
 					     hout, FORWARD_FAILED,
 					     hout->failmsg
 					     ? fromwire_peektype(hout->failmsg)
@@ -1565,6 +1573,18 @@ void onchain_failed_our_htlc(const struct channel *channel,
 		return;
 	}
 
+	/* We can have hout->failonion (which gets set when we process the
+	 * received commitment_signed), but not failed hin yet, because the peer
+	 * hadn't revoke_and_acked our own commitment without that htlc. */
+	if (hout->failonion && hout->in
+	    && hout->in->badonion == 0
+	    && !hout->in->failonion
+	    && !hout->in->preimage) {
+		log_debug(channel->log, "HTLC out %"PRIu64" can now fail HTLC upstream!",
+			  htlc->id);
+		fail_in_htlc(hout->in, hout->failonion);
+	}
+
 	/* Don't fail twice (or if already succeeded)! */
 	if (hout->failonion || hout->failmsg || hout->preimage) {
 		log_debug(channel->log, "HTLC id %"PRIu64" failonion = %p, failmsg = %p, preimage = %p",
@@ -1606,7 +1626,7 @@ void onchain_failed_our_htlc(const struct channel *channel,
 				   take(towire_permanent_channel_failure(NULL)));
 		wallet_forwarded_payment_add(hout->key.channel->peer->ld->wallet,
 					 hout->in, get_onion_style(hout->in),
-					 channel->scid, hout,
+					 channel_scid_or_local_alias(channel), hout,
 					 FORWARD_LOCAL_FAILED,
 					 hout->failmsg
 					 ? fromwire_peektype(hout->failmsg)
@@ -1773,7 +1793,7 @@ static bool update_out_htlc(struct channel *channel,
 		if (hout->in) {
 			wallet_forwarded_payment_add(ld->wallet, hout->in,
 						     get_onion_style(hout->in),
-						     channel->scid, hout,
+						     channel_scid_or_local_alias(channel), hout,
 						     FORWARD_OFFERED, 0);
 		}
 
@@ -2757,7 +2777,7 @@ void json_format_forwarding_object(struct json_stream *response,
 				    "in_msatoshi", "in_msat");
 
 	/* These can be unset (aka zero) if we failed before channel lookup */
-	if (cur->channel_out.u64 != 0) {
+	if (!amount_msat_eq(cur->msat_out, AMOUNT_MSAT(0))) {
 		json_add_amount_msat_compat(response,
 					    cur->msat_out,
 					    "out_msatoshi",  "out_msat");

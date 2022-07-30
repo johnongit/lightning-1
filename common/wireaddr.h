@@ -12,14 +12,6 @@ struct sockaddr_in6;
 struct sockaddr_in;
 struct sockaddr_un;
 
-/* BOLT #1:
- *
- * The default TCP port is 9735. This corresponds to hexadecimal
- * `0x2607`: the Unicode code point for LIGHTNING.
- */
-#define DEFAULT_PORT 9735
-
-
 /* BOLT #7:
  *
  * The following `address descriptor` types are defined:
@@ -196,5 +188,8 @@ struct wireaddr *fromwire_wireaddr_array(const tal_t *ctx, const u8 *ser);
 
 int wireaddr_cmp_type(const struct wireaddr *a,
 		      const struct wireaddr *b, void *unused);
+
+bool wireaddr_arr_contains(const struct wireaddr *was,
+			   const struct wireaddr *wa);
 
 #endif /* LIGHTNING_COMMON_WIREADDR_H */

@@ -39,6 +39,8 @@ static const char *mvt_tags[] = {
 	"opener",
 	"lease_fee",
 	"leased",
+	"stealable",
+	"channel_proposed",
 };
 
 const char *mvt_tag_str(enum mvt_tag tag)
@@ -88,7 +90,7 @@ static struct chain_coin_mvt *new_chain_coin_mvt(const tal_t *ctx,
 						 const struct bitcoin_outpoint *outpoint,
 						 const struct sha256 *payment_hash TAKES,
 						 u32 blockheight,
-						 enum mvt_tag *tags TAKES,
+						 enum mvt_tag *tags,
 						 struct amount_msat amount,
 						 bool is_credit,
 						 struct amount_sat output_val,
@@ -104,6 +106,9 @@ static struct chain_coin_mvt *new_chain_coin_mvt(const tal_t *ctx,
 	mvt->tx_txid = tx_txid;
 	mvt->outpoint = outpoint;
 	mvt->originating_acct = NULL;
+
+	/* Most chain event's don't have a peer (only channel_opens) */
+	mvt->peer_id = NULL;
 
 	/* for htlc's that are filled onchain, we also have a
 	 * preimage, NULL otherwise */
@@ -192,9 +197,37 @@ struct chain_coin_mvt *new_coin_channel_close(const tal_t *ctx,
 				  output_count);
 }
 
+struct chain_coin_mvt *new_coin_channel_open_proposed(const tal_t *ctx,
+						      const struct channel_id *chan_id,
+						      const struct bitcoin_outpoint *out,
+						      const struct node_id *peer_id,
+						      const struct amount_msat amount,
+						      const struct amount_sat output_val,
+						      bool is_opener,
+						      bool is_leased)
+{
+	struct chain_coin_mvt *mvt;
+
+	mvt = new_chain_coin_mvt(ctx, NULL, NULL, out, NULL, 0,
+				 take(new_tag_arr(NULL, CHANNEL_PROPOSED)),
+				 amount, true, output_val, 0);
+	mvt->account_name = type_to_string(mvt, struct channel_id, chan_id);
+	mvt->peer_id = tal_dup(mvt, struct node_id, peer_id);
+
+	/* If we're the opener, add to the tag list */
+	if (is_opener)
+		tal_arr_expand(&mvt->tags, OPENER);
+
+	if (is_leased)
+		tal_arr_expand(&mvt->tags, LEASED);
+
+	return mvt;
+}
+
 struct chain_coin_mvt *new_coin_channel_open(const tal_t *ctx,
 					     const struct channel_id *chan_id,
 					     const struct bitcoin_outpoint *out,
+					     const struct node_id *peer_id,
 					     u32 blockheight,
 					     const struct amount_msat amount,
 					     const struct amount_sat output_val,
@@ -207,6 +240,7 @@ struct chain_coin_mvt *new_coin_channel_open(const tal_t *ctx,
 				 take(new_tag_arr(NULL, CHANNEL_OPEN)), amount,
 				 true, output_val, 0);
 	mvt->account_name = type_to_string(mvt, struct channel_id, chan_id);
+	mvt->peer_id = tal_dup(mvt, struct node_id, peer_id);
 
 	/* If we're the opener, add to the tag list */
 	if (is_opener)
@@ -247,6 +281,19 @@ struct chain_coin_mvt *new_onchain_htlc_withdraw(const tal_t *ctx,
 				      amount, true);
 }
 
+struct chain_coin_mvt *new_coin_external_spend_tags(const tal_t *ctx,
+						    const struct bitcoin_outpoint *outpoint,
+						    const struct bitcoin_txid *txid,
+						    u32 blockheight,
+						    struct amount_sat amount,
+						    enum mvt_tag *tags TAKES)
+{
+	return new_chain_coin_mvt(ctx, EXTERNAL, txid,
+				  outpoint, NULL, blockheight,
+				  take(tags),
+				  AMOUNT_MSAT(0), true, amount, 0);
+}
+
 struct chain_coin_mvt *new_coin_external_spend(const tal_t *ctx,
 					       const struct bitcoin_outpoint *outpoint,
 					       const struct bitcoin_txid *txid,
@@ -254,11 +301,22 @@ struct chain_coin_mvt *new_coin_external_spend(const tal_t *ctx,
 					       struct amount_sat amount,
 					       enum mvt_tag tag)
 {
-	return new_chain_coin_mvt(ctx, EXTERNAL, txid,
-				  outpoint, NULL, blockheight,
-				  take(new_tag_arr(NULL, tag)),
-				  AMOUNT_MSAT(0), true, amount, 0);
+	return new_coin_external_spend_tags(ctx, outpoint,
+					    txid, blockheight, amount,
+					    new_tag_arr(NULL, tag));
 }
+
+struct chain_coin_mvt *new_coin_external_deposit_tags(const tal_t *ctx,
+						 const struct bitcoin_outpoint *outpoint,
+						 u32 blockheight,
+						 struct amount_sat amount,
+						 enum mvt_tag *tags TAKES)
+{
+	return new_chain_coin_mvt_sat(ctx, EXTERNAL, NULL, outpoint, NULL,
+				      blockheight, take(tags),
+				      amount, true);
+}
+
 
 struct chain_coin_mvt *new_coin_external_deposit(const tal_t *ctx,
 						 const struct bitcoin_outpoint *outpoint,
@@ -285,6 +343,19 @@ struct chain_coin_mvt *new_coin_wallet_deposit(const tal_t *ctx,
 	return new_chain_coin_mvt_sat(ctx, WALLET, NULL,
 				      outpoint, NULL,
 				      blockheight, take(new_tag_arr(NULL, tag)),
+				      amount, true);
+}
+
+struct chain_coin_mvt *new_coin_wallet_deposit_tagged(const tal_t *ctx,
+						      const struct bitcoin_outpoint *outpoint,
+						      u32 blockheight,
+						      struct amount_sat amount,
+						      enum mvt_tag *tags TAKES)
+{
+	return new_chain_coin_mvt_sat(ctx, WALLET, NULL,
+				      outpoint, NULL,
+				      blockheight,
+				      take(tags),
 				      amount, true);
 }
 
@@ -346,6 +417,7 @@ struct coin_mvt *finalize_chain_mvt(const tal_t *ctx,
 	mvt->blockheight = chain_mvt->blockheight;
 	mvt->version = COIN_MVT_VERSION;
 	mvt->node_id = node_id;
+	mvt->peer_id = chain_mvt->peer_id;
 
 	return mvt;
 }
@@ -378,6 +450,7 @@ struct coin_mvt *finalize_channel_mvt(const tal_t *ctx,
 	mvt->timestamp = timestamp;
 	mvt->version = COIN_MVT_VERSION;
 	mvt->node_id = tal_dup(mvt, struct node_id, node_id);
+	mvt->peer_id = NULL;
 
 	return mvt;
 }
@@ -419,6 +492,12 @@ void towire_chain_coin_mvt(u8 **pptr, const struct chain_coin_mvt *mvt)
 	towire_amount_msat(pptr, mvt->debit);
 	towire_amount_sat(pptr, mvt->output_val);
 	towire_u32(pptr, mvt->output_count);
+
+	if (mvt->peer_id) {
+		towire_bool(pptr, true);
+		towire_node_id(pptr, mvt->peer_id);
+	} else
+		towire_bool(pptr, false);
 }
 
 void fromwire_chain_coin_mvt(const u8 **cursor, size_t *max, struct chain_coin_mvt *mvt)
@@ -462,4 +541,11 @@ void fromwire_chain_coin_mvt(const u8 **cursor, size_t *max, struct chain_coin_m
 	mvt->debit = fromwire_amount_msat(cursor, max);
 	mvt->output_val = fromwire_amount_sat(cursor, max);
 	mvt->output_count = fromwire_u32(cursor, max);
+
+	if (fromwire_bool(cursor, max)) {
+		struct node_id peer_id;
+		fromwire_node_id(cursor, max, &peer_id);
+		mvt->peer_id = tal_dup(mvt, struct node_id, &peer_id);
+	} else
+		mvt->peer_id = NULL;
 }

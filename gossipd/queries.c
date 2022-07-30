@@ -23,13 +23,18 @@ static u32 dev_max_encoding_bytes = -1U;
 /* BOLT #7:
  *
  * There are several messages which contain a long array of
- * `short_channel_id`s (called `encoded_short_ids`) so we utilize a
- * simple compression scheme: the first byte indicates the encoding, the
- * rest contains the data.
+ * `short_channel_id`s (called `encoded_short_ids`) so we include an encoding
+ *  byte which allows for different encoding schemes to be defined in the future
  */
-static u8 *encoding_start(const tal_t *ctx)
+static u8 *encoding_start(const tal_t *ctx, bool prepend_encoding)
 {
-	return tal_arr(ctx, u8, 0);
+	u8 *ret;
+	if (prepend_encoding) {
+		ret = tal_arr(ctx, u8, 1);
+		ret[0] = ARR_UNCOMPRESSED;
+	} else
+		ret = tal_arr(ctx, u8, 0);
+	return ret;
 }
 
 /* Marshal a single short_channel_id */
@@ -52,89 +57,13 @@ static void encoding_add_query_flag(u8 **encoded, bigsize_t flag)
 	towire_bigsize(encoded, flag);
 }
 
-/* Greg Maxwell asked me privately about using zlib for communicating a set,
- * and suggested that we'd be better off using Golomb-Rice coding a-la BIP
- * 158.  However, naively using Rice encoding isn't a win: we have to get
- * more complex and use separate streams.  The upside is that it's between
- * 2 and 5 times smaller (assuming optimal Rice encoding + gzip).  We can add
- * that later. */
-static u8 *zencode(const tal_t *ctx, const u8 *scids, size_t len)
+static bool encoding_end(const u8 *encoded, size_t max_bytes)
 {
-	u8 *z;
-	int err;
-	unsigned long compressed_len = len;
-
-#ifdef ZLIB_EVEN_IF_EXPANDS
-	/* Needed for test vectors */
-	compressed_len = 128 * 1024;
-#endif
-	/* Prefer to fail if zlib makes it larger */
-	z = tal_arr(ctx, u8, compressed_len);
-	err = compress2(z, &compressed_len, scids, len, Z_DEFAULT_COMPRESSION);
-	if (err == Z_OK) {
-		tal_resize(&z, compressed_len);
-		return z;
-	}
-	return NULL;
-}
-
-/* Try compressing *encoded: fails if result would be longer.
- * @off is offset to place result in *encoded.
- */
-static bool encoding_end_zlib(u8 **encoded, size_t off)
-{
-	u8 *z;
-	size_t len = tal_count(*encoded);
-
-	z = zencode(tmpctx, *encoded, len);
-	if (!z)
-		return false;
-
-	/* Successful: copy over and trim */
-	tal_resize(encoded, off + tal_count(z));
-	memcpy(*encoded + off, z, tal_count(z));
-
-	tal_free(z);
-	return true;
-}
-
-static void encoding_end_no_compress(u8 **encoded, size_t off)
-{
-	size_t len = tal_count(*encoded);
-
-	tal_resize(encoded, off + len);
-	memmove(*encoded + off, *encoded, len);
-}
-
-/* Once we've assembled it, try compressing.
- * Prepends encoding type to @encoding. */
-static bool encoding_end_prepend_type(u8 **encoded, size_t max_bytes)
-{
-	if (encoding_end_zlib(encoded, 1))
-		**encoded = ARR_ZLIB;
-	else {
-		encoding_end_no_compress(encoded, 1);
-		**encoded = ARR_UNCOMPRESSED;
-	}
-
 #if DEVELOPER
-	if (tal_count(*encoded) > dev_max_encoding_bytes)
+	if (tal_count(encoded) > dev_max_encoding_bytes)
 		return false;
 #endif
-	return tal_count(*encoded) <= max_bytes;
-}
-
-/* Try compressing, leaving type external */
-static bool encoding_end_external_type(u8 **encoded, u8 *type, size_t max_bytes)
-{
-	if (encoding_end_zlib(encoded, 0))
-		*type = ARR_ZLIB;
-	else {
-		encoding_end_no_compress(encoded, 0);
-		*type = ARR_UNCOMPRESSED;
-	}
-
-	return tal_count(*encoded) <= max_bytes;
+	return tal_count(encoded) <= max_bytes;
 }
 
 /* Query this peer for these short-channel-ids. */
@@ -180,20 +109,19 @@ bool query_short_channel_ids(struct daemon *daemon,
 	if (peer->scid_query_outstanding)
 		return false;
 
-	encoded = encoding_start(tmpctx);
+	encoded = encoding_start(tmpctx, true);
 	for (size_t i = 0; i < tal_count(scids); i++) {
 		/* BOLT #7:
 		 *
 		 * Encoding types:
 		 * * `0`: uncompressed array of `short_channel_id` types, in
 		 *   ascending order.
-		 * * `1`: array of `short_channel_id` types, in ascending order
 		 */
 		assert(i == 0 || scids[i].u64 > scids[i-1].u64);
 		encoding_add_short_channel_id(&encoded, &scids[i]);
 	}
 
-	if (!encoding_end_prepend_type(&encoded, max_encoded_bytes)) {
+	if (!encoding_end(encoded, max_encoded_bytes)) {
 		status_broken("query_short_channel_ids: %zu is too many",
 			      tal_count(scids));
 		return false;
@@ -204,15 +132,15 @@ bool query_short_channel_ids(struct daemon *daemon,
 		tlvs = tlv_query_short_channel_ids_tlvs_new(tmpctx);
 		tlvq = tlvs->query_flags = tal(tlvs,
 			   struct tlv_query_short_channel_ids_tlvs_query_flags);
- 		tlvq->encoded_query_flags = encoding_start(tlvq);
+		tlvq->encoding_type = ARR_UNCOMPRESSED;
+		tlvq->encoded_query_flags = encoding_start(tlvq, false);
 		for (size_t i = 0; i < tal_count(query_flags); i++)
 			encoding_add_query_flag(&tlvq->encoded_query_flags,
 						query_flags[i]);
 
 		max_encoded_bytes -= tal_bytelen(encoded);
-		if (!encoding_end_external_type(&tlvq->encoded_query_flags,
-						&tlvq->encoding_type,
-						max_encoded_bytes)) {
+		if (!encoding_end(tlvq->encoded_query_flags,
+				  max_encoded_bytes)) {
 			status_broken("query_short_channel_ids:"
 				      " %zu query_flags is too many",
 				      tal_count(query_flags));
@@ -359,24 +287,24 @@ static void send_reply_channel_range(struct peer *peer,
 	 *   - MUST limit `number_of_blocks` to the maximum number of blocks
 	 *     whose results could fit in `encoded_short_ids`
 	 */
-	u8 *encoded_scids = encoding_start(tmpctx);
-	u8 *encoded_timestamps = encoding_start(tmpctx);
+	u8 *encoded_scids = encoding_start(tmpctx, true);
+	u8 *encoded_timestamps = encoding_start(tmpctx, false);
  	struct tlv_reply_channel_range_tlvs *tlvs
  		= tlv_reply_channel_range_tlvs_new(tmpctx);
 
 	/* Encode them all */
 	for (size_t i = 0; i < num_scids; i++)
 		encoding_add_short_channel_id(&encoded_scids, &scids[i]);
-	encoding_end_prepend_type(&encoded_scids, tal_bytelen(encoded_scids));
+	encoding_end(encoded_scids, tal_bytelen(encoded_scids));
 
 	if (tstamps) {
 		for (size_t i = 0; i < num_scids; i++)
 			encoding_add_timestamps(&encoded_timestamps, &tstamps[i]);
 
 		tlvs->timestamps_tlv = tal(tlvs, struct tlv_reply_channel_range_tlvs_timestamps_tlv);
-		encoding_end_external_type(&encoded_timestamps,
-					   &tlvs->timestamps_tlv->encoding_type,
-					   tal_bytelen(encoded_timestamps));
+		tlvs->timestamps_tlv->encoding_type = ARR_UNCOMPRESSED;
+		encoding_end(encoded_timestamps,
+			     tal_bytelen(encoded_timestamps));
 		tlvs->timestamps_tlv->encoded_timestamps
 			= tal_steal(tlvs, encoded_timestamps);
 	}

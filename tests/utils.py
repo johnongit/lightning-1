@@ -9,6 +9,18 @@ EXPERIMENTAL_FEATURES = env("EXPERIMENTAL_FEATURES", "0") == "1"
 COMPAT = env("COMPAT", "1") == "1"
 
 
+def default_ln_port(network: str) -> int:
+    network_map = {
+        "bitcoin": 9735,
+        "testnet": 19735,
+        "regtest": 19846,
+        "signet": 39735,
+        "liquid-regtest": 20735,
+        "liquid": 9735,
+    }
+    return network_map[network]
+
+
 def anchor_expected():
     return EXPERIMENTAL_FEATURES or EXPERIMENTAL_DUAL_FUND
 
@@ -25,7 +37,7 @@ def hex_bits(features):
 
 def expected_peer_features(wumbo_channels=False, extra=[]):
     """Return the expected peer features hexstring for this configuration"""
-    features = [1, 5, 7, 8, 11, 13, 14, 17, 27]
+    features = [1, 5, 7, 8, 11, 13, 14, 17, 27, 47, 51]
     if EXPERIMENTAL_FEATURES:
         # OPT_ONION_MESSAGES
         features += [39]
@@ -47,7 +59,7 @@ def expected_peer_features(wumbo_channels=False, extra=[]):
 # features for the 'node' and the 'peer' feature sets
 def expected_node_features(wumbo_channels=False, extra=[]):
     """Return the expected node features hexstring for this configuration"""
-    features = [1, 5, 7, 8, 11, 13, 14, 17, 27, 55]
+    features = [1, 5, 7, 8, 11, 13, 14, 17, 27, 47, 51, 55]
     if EXPERIMENTAL_FEATURES:
         # OPT_ONION_MESSAGES
         features += [39]
@@ -74,18 +86,18 @@ def expected_channel_features(wumbo_channels=False, extra=[]):
 def move_matches(exp, mv):
     if mv['type'] != exp['type']:
         return False
-    if mv['credit'] != "{}msat".format(exp['credit']):
+    if Millisatoshi(mv['credit_msat']) != Millisatoshi(exp['credit_msat']):
         return False
-    if mv['debit'] != "{}msat".format(exp['debit']):
+    if Millisatoshi(mv['debit_msat']) != Millisatoshi(exp['debit_msat']):
         return False
     if mv['tags'] != exp['tags']:
         return False
-    if 'fees' in exp:
-        if 'fees' not in mv:
+    if 'fees_msat' in exp:
+        if 'fees_msat' not in mv:
             return False
-        if mv['fees'] != exp['fees']:
+        if Millisatoshi(mv['fees_msat']) != Millisatoshi(exp['fees_msat']):
             return False
-    elif 'fees' in mv:
+    elif 'fees_msat' in mv:
         return False
     return True
 
@@ -103,8 +115,8 @@ def check_balance_snaps(n, expected_bals):
         assert snap['blockheight'] == exp['blockheight']
         for acct, exp_acct in zip(snap['accounts'], exp['accounts']):
             # FIXME: also check 'account_id's (these change every run)
-            for item in ['balance']:
-                assert acct[item] == exp_acct[item]
+            for item in ['balance_msat']:
+                assert Millisatoshi(acct[item]) == Millisatoshi(exp_acct[item])
 
 
 def check_coin_moves(n, account_id, expected_moves, chainparams):
@@ -125,12 +137,12 @@ def check_coin_moves(n, account_id, expected_moves, chainparams):
     node_id = n.info['id']
     acct_moves = [m for m in moves if m['account_id'] == account_id]
     for mv in acct_moves:
-        print("{{'type': '{}', 'credit': {}, 'debit': {}, 'tags': '{}' , ['fees'?: '{}']}},"
+        print("{{'type': '{}', 'credit_msat': {}, 'debit_msat': {}, 'tags': '{}' , ['fees_msat'?: '{}']}},"
               .format(mv['type'],
-                      Millisatoshi(mv['credit']).millisatoshis,
-                      Millisatoshi(mv['debit']).millisatoshis,
+                      Millisatoshi(mv['credit_msat']).millisatoshis,
+                      Millisatoshi(mv['debit_msat']).millisatoshis,
                       mv['tags'],
-                      mv['fees'] if 'fees' in mv else ''))
+                      mv['fees_msat'] if 'fees_msat' in mv else ''))
         assert mv['version'] == 2
         assert mv['node_id'] == node_id
         assert mv['timestamp'] > 0
@@ -165,10 +177,10 @@ def account_balance(n, account_id):
     moves = dedupe_moves(n.rpc.call('listcoinmoves_plugin')['coin_moves'])
     chan_moves = [m for m in moves if m['account_id'] == account_id]
     assert len(chan_moves) > 0
-    m_sum = 0
+    m_sum = Millisatoshi(0)
     for m in chan_moves:
-        m_sum += int(m['credit'][:-4])
-        m_sum -= int(m['debit'][:-4])
+        m_sum += Millisatoshi(m['credit_msat'])
+        m_sum -= Millisatoshi(m['debit_msat'])
     return m_sum
 
 
@@ -189,7 +201,7 @@ def extract_utxos(moves):
             for ev in evs:
                 if ev[0]['vout'] == m['vout']:
                     ev[1] = m
-                    assert ev[0]['output_value'] == m['output_value']
+                    assert ev[0]['output_msat'] == m['output_msat']
                     break
     return utxos
 
@@ -301,6 +313,64 @@ def dedupe_moves(moves):
             deduped_moves.append(move)
             move_set[outpoint] = move
     return deduped_moves
+
+
+def inspect_check_actual(txids, channel_id, actual, exp):
+    assert len(actual['outputs']) == len(exp)
+    for e in exp:
+        # find the event in actual that matches
+        found = False
+        for a in actual['outputs']:
+            if e[0].startswith('cid'):
+                if a['account'] != channel_id:
+                    continue
+            elif a['account'] != e[0]:
+                continue
+
+            if e[1][0] != a['output_tag']:
+                continue
+            if e[2]:
+                assert e[2][0] == a['spend_tag']
+                txids.append((e[3], a['spending_txid']))
+            else:
+                assert 'spend_tag' not in a
+            found = True
+            break
+        assert found
+
+    return txids
+
+
+def check_inspect_channel(n, channel_id, expected_txs):
+    actual_txs = n.rpc.bkpr_inspect(channel_id)['txs']
+    assert len(actual_txs) == len(expected_txs.keys())
+    # start at the top
+    exp = list(expected_txs.values())[0]
+    actual = actual_txs[0]
+
+    txids = []
+
+    exp_counter = 1
+    inspect_check_actual(txids, channel_id, actual, exp)
+    actual_txs.remove(actual)
+
+    for (marker, txid) in txids:
+        actual = None
+        for a in actual_txs:
+            if a['txid'] == txid:
+                actual = a
+                break
+        assert actual
+        exp = expected_txs[marker]
+        inspect_check_actual(txids, channel_id, actual, exp)
+
+        # after we've inspected it, remove it
+        actual_txs.remove(actual)
+        exp_counter += 1
+
+    # Did we inspect everything?
+    assert len(actual_txs) == 0
+    assert exp_counter == len(expected_txs.keys())
 
 
 def check_utxos_channel(n, chans, expected, exp_tag_list=None, filter_channel=None):

@@ -1,6 +1,7 @@
 #include "config.h"
 #include <arpa/inet.h>
 #include <assert.h>
+#include <bitcoin/chainparams.h>
 #include <ccan/mem/mem.h>
 #include <ccan/tal/str/str.h>
 #include <common/base32.h>
@@ -336,6 +337,7 @@ bool separate_address_and_port(const tal_t *ctx, const char *arg,
 		*port = strtol(portcolon + 1, &endp, 10);
 		return *port != 0 && *endp == '\0';
 	}
+
 	return true;
 }
 
@@ -612,7 +614,7 @@ bool parse_wireaddr_internal(const char *arg, struct wireaddr_internal *addr,
 	 * an onion address. */
 	if (strstarts(arg, "autotor:")) {
 		addr->itype = ADDR_INTERNAL_AUTOTOR;
-		addr->u.torservice.port = DEFAULT_PORT;
+		addr->u.torservice.port = chainparams_get_ln_port(chainparams);
 		/* Format is separated by slash. */
 		char **parts = tal_strsplit(tmpctx, arg, "/", STR_EMPTY_OK);
 
@@ -644,7 +646,7 @@ bool parse_wireaddr_internal(const char *arg, struct wireaddr_internal *addr,
 	if (strstarts(arg, "statictor:")) {
 		bool use_magic_blob = true;
 		addr->itype = ADDR_INTERNAL_STATICTOR;
-		addr->u.torservice.port = DEFAULT_PORT;
+		addr->u.torservice.port = chainparams_get_ln_port(chainparams);
 		memset(addr->u.torservice.blob, 0, sizeof(addr->u.torservice.blob));
 
 		/* Format is separated by slash. */
@@ -898,4 +900,13 @@ int wireaddr_cmp_type(const struct wireaddr *a,
 	if (cmp == 0)
 		return tal_bytelen(a_wire) - tal_bytelen(b_wire);
 	return cmp;
+}
+
+bool wireaddr_arr_contains(const struct wireaddr *was,
+			   const struct wireaddr *wa)
+{
+	for (size_t i = 0; i < tal_count(was); i++)
+		if (wireaddr_eq(&was[i], wa))
+			return true;
+	return false;
 }

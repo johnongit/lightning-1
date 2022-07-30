@@ -185,6 +185,16 @@ struct peer {
 	/* We allow a 'tx-sigs' message between reconnect + funding_locked */
 	bool tx_sigs_allowed;
 
+	/* Have we announced the real scid with a
+	 * local_channel_announcement? This can be different from the
+	 * `channel_local_active` flag in case we are using zeroconf,
+	 * in which case we'll have announced the channels with the
+	 * two aliases (LOCAL and REMOTE) but not with the real scid
+	 * just yet. If we get a funding depth change, with a scid,
+	 * and the two flags not equal we know we have to announce the
+	 * channel with the real scid. */
+	bool gossip_scid_announced;
+
 	/* Most recent channel_update message. */
 	u8 *channel_update;
 };
@@ -535,6 +545,14 @@ static void channel_announcement_negotiate(struct peer *peer)
 	if (!peer->channel_local_active) {
 		peer->channel_local_active = true;
 		make_channel_local_active(peer);
+	} else if(!peer->gossip_scid_announced) {
+		/* So we know a short_channel_id, i.e., a point on
+		 * chain, but haven't added it to our local view of
+		 * the gossip yet. We need to add it now (and once
+		 * only), so our `channel_update` we'll send a couple
+		 * of lines down has something to attach to. */
+		peer->gossip_scid_announced = true;
+		make_channel_local_active(peer);
 	}
 
 	/* BOLT #7:
@@ -587,7 +605,7 @@ static void channel_announcement_negotiate(struct peer *peer)
 static void handle_peer_funding_locked(struct peer *peer, const u8 *msg)
 {
 	struct channel_id chanid;
-
+	struct tlv_funding_locked_tlvs *tlvs;
 	/* BOLT #2:
 	 *
 	 * A node:
@@ -603,8 +621,8 @@ static void handle_peer_funding_locked(struct peer *peer, const u8 *msg)
 		return;
 
 	peer->old_remote_per_commit = peer->remote_per_commit;
-	if (!fromwire_funding_locked(msg, &chanid,
-				     &peer->remote_per_commit))
+	if (!fromwire_funding_locked(msg, msg, &chanid,
+				     &peer->remote_per_commit, &tlvs))
 		peer_failed_warn(peer->pps, &peer->channel_id,
 				 "Bad funding_locked %s", tal_hex(msg, msg));
 
@@ -617,9 +635,16 @@ static void handle_peer_funding_locked(struct peer *peer, const u8 *msg)
 
 	peer->tx_sigs_allowed = false;
 	peer->funding_locked[REMOTE] = true;
+	if (tlvs->alias != NULL) {
+		status_debug(
+		    "Peer told us that they'll use alias=%s for this channel",
+		    type_to_string(tmpctx, struct short_channel_id,
+				   tlvs->alias));
+		peer->short_channel_ids[REMOTE] = *tlvs->alias;
+	}
 	wire_sync_write(MASTER_FD,
-			take(towire_channeld_got_funding_locked(NULL,
-						&peer->remote_per_commit)));
+			take(towire_channeld_got_funding_locked(
+			    NULL, &peer->remote_per_commit, tlvs->alias)));
 
 	channel_announcement_negotiate(peer);
 	billboard_update(peer);
@@ -2928,13 +2953,14 @@ skip_tlvs:
 	    && peer->next_index[LOCAL] == 1
 	    && next_commitment_number == 1) {
 		u8 *msg;
+		struct tlv_funding_locked_tlvs *tlvs = tlv_funding_locked_tlvs_new(tmpctx);
 
 		status_debug("Retransmitting funding_locked for channel %s",
 		             type_to_string(tmpctx, struct channel_id, &peer->channel_id));
 		/* Contains per commit point #1, for first post-opening commit */
 		msg = towire_funding_locked(NULL,
 					    &peer->channel_id,
-					    &peer->next_local_per_commit);
+					    &peer->next_local_per_commit, tlvs);
 		peer_write(peer->pps, take(msg));
 	}
 
@@ -3207,12 +3233,15 @@ skip_tlvs:
 static void handle_funding_depth(struct peer *peer, const u8 *msg)
 {
 	u32 depth;
-	struct short_channel_id *scid;
+	struct short_channel_id *scid, *alias_local;
+	struct tlv_funding_locked_tlvs *tlvs;
+	struct pubkey point;
 
 	if (!fromwire_channeld_funding_depth(tmpctx,
-					    msg,
-					    &scid,
-					    &depth))
+					     msg,
+					     &scid,
+					     &alias_local,
+					     &depth))
 		master_badmsg(WIRE_CHANNELD_FUNDING_DEPTH, msg);
 
 	/* Too late, we're shutting down! */
@@ -3225,8 +3254,14 @@ static void handle_funding_depth(struct peer *peer, const u8 *msg)
 	} else {
 		peer->depth_togo = 0;
 
-		assert(scid);
-		peer->short_channel_ids[LOCAL] = *scid;
+		/* If we know an actual short_channel_id prefer to use
+		 * that, otherwise fill in the alias. From channeld's
+		 * point of view switching from zeroconf to an actual
+		 * funding scid is just a reorg. */
+		if (scid)
+			peer->short_channel_ids[LOCAL] = *scid;
+		else if (alias_local)
+			peer->short_channel_ids[LOCAL] = *alias_local;
 
 		if (!peer->funding_locked[LOCAL]) {
 			status_debug("funding_locked: sending commit index"
@@ -3234,9 +3269,16 @@ static void handle_funding_depth(struct peer *peer, const u8 *msg)
 				     peer->next_index[LOCAL],
 				     type_to_string(tmpctx, struct pubkey,
 						    &peer->next_local_per_commit));
-			msg = towire_funding_locked(NULL,
-						    &peer->channel_id,
-						    &peer->next_local_per_commit);
+			tlvs = tlv_funding_locked_tlvs_new(tmpctx);
+			tlvs->alias = alias_local;
+
+			/* Need to retrieve the first point again, even if we
+			 * moved on, as funding_locked explicitly includes the
+			 * first one. */
+			get_per_commitment_point(1, &point, NULL);
+
+			msg = towire_funding_locked(NULL, &peer->channel_id,
+						    &point, tlvs);
 			peer_write(peer->pps, take(msg));
 
 			peer->funding_locked[LOCAL] = true;
@@ -3590,6 +3632,7 @@ static void handle_send_error(struct peer *peer, const u8 *msg)
 
 	wire_sync_write(MASTER_FD,
 			take(towire_channeld_send_error_reply(NULL)));
+	exit(0);
 }
 
 #if DEVELOPER
@@ -3960,6 +4003,7 @@ int main(int argc, char *argv[])
 	peer->have_sigs[LOCAL] = peer->have_sigs[REMOTE] = false;
 	peer->announce_depth_reached = false;
 	peer->channel_local_active = false;
+	peer->gossip_scid_announced = false;
 	peer->from_master = msg_queue_new(peer, true);
 	peer->shutdown_sent[LOCAL] = false;
 	peer->shutdown_wrong_funding = NULL;
