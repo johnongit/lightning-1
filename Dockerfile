@@ -108,6 +108,7 @@ RUN apt-get update -qq && \
 
 RUN git clone https://github.com/ZmnSCPxj/clboss.git && \
     cd clboss && \
+    git checkout 0.13A && \
     autoreconf -i && \
     ./configure && make && \
     make install
@@ -153,7 +154,8 @@ FROM debian:buster-slim as final
 COPY --from=downloader /opt/tini /usr/bin/tini
 
 RUN apt-get update && apt-get install -y --no-install-recommends default-jdk libffi-dev libleveldb-dev libev-dev libpq5 \
-    libsodium-dev libpq-dev git socat inotify-tools python3 python3-pip python3-setuptools build-essential python3-dev python3-wheel python3-venv dnsutils curl \    
+    libsodium-dev libpq-dev git socat inotify-tools python3 python3-pip python3-setuptools build-essential python3-dev python3-wheel python3-venv dnsutils curl libsecp256k1-0 \
+    libuv1 \    
     && curl -sL https://deb.nodesource.com/setup_12.x  | bash - && \
     apt-get -y install nodejs &&\
     rm -rf /var/lib/apt/lists/*
@@ -164,6 +166,7 @@ RUN mkdir -p /python-plugin/plugins  && \
     git clone https://github.com/talaia-labs/python-teos.git && \
     cd python-teos &&  pip3 install -r requirements.txt && \
     cd watchtower-plugin && pip3 install -r requirements.txt && \
+    pip3 install pyln-client==0.10.1 && \
     cd /python-teos && COMMON_ONLY=1 pip3 install . 
 
 ## Install cln-rest for RTL
@@ -171,7 +174,8 @@ RUN mkdir -p /python-plugin/plugins \
     && cd /python-plugin/plugins && \
     git clone https://github.com/Ride-The-Lightning/c-lightning-REST.git && \
     cd c-lightning-REST && \
-    npm install --only=production
+    git checkout v0.7.2 && \
+    npm install
 
 
 ## Install btcli4j
