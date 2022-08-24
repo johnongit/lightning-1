@@ -271,7 +271,7 @@ static u8 *handle_derive_secret(struct hsmd_client *c, const u8 *msg_in)
 		return hsmd_status_malformed_request(c, msg_in);
 
 	hkdf_sha256(&secret, sizeof(struct secret), NULL, 0,
-		    &secretstuff.derived_secret, sizeof(&secretstuff.derived_secret),
+		    &secretstuff.derived_secret, sizeof(secretstuff.derived_secret),
 		    info, tal_bytelen(info));
 
 	return towire_hsmd_derive_secret_reply(NULL, &secret);
@@ -502,7 +502,8 @@ static void sign_our_inputs(struct utxo **utxos, struct wally_psbt *psbt)
 			tal_wally_start();
 			if (wally_psbt_sign(psbt, privkey.secret.data,
 					    sizeof(privkey.secret.data),
-					    EC_FLAG_GRIND_R) != WALLY_OK)
+					    EC_FLAG_GRIND_R) != WALLY_OK) {
+				tal_wally_end(psbt);
 				hsmd_status_broken(
 				    "Received wally_err attempting to "
 				    "sign utxo with key %s. PSBT: %s",
@@ -510,6 +511,7 @@ static void sign_our_inputs(struct utxo **utxos, struct wally_psbt *psbt)
 						   &pubkey),
 				    type_to_string(tmpctx, struct wally_psbt,
 						   psbt));
+			}
 			tal_wally_end(psbt);
 		}
 	}

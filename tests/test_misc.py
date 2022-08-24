@@ -1828,11 +1828,13 @@ def test_list_features_only(node_factory):
         expected += ['option_shutdown_anysegwit/odd']
         expected += ['option_quiesce/odd']
         expected += ['option_onion_messages/odd']
+        expected += ['option_channel_type/odd']
         expected += ['option_scid_alias/odd']
         expected += ['option_zeroconf/odd']
         expected += ['supports_open_accept_channel_type']
     else:
         expected += ['option_shutdown_anysegwit/odd']
+        expected += ['option_channel_type/odd']
         expected += ['option_scid_alias/odd']
         expected += ['option_zeroconf/odd']
     assert features == expected
@@ -2266,7 +2268,7 @@ def test_makesecret(node_factory):
     l1 = node_factory.get_node(options={"dev-force-privkey": "1212121212121212121212121212121212121212121212121212121212121212"})
     secret = l1.rpc.makesecret("73636220736563726574")["secret"]
 
-    assert (secret == "04fe01631fcedc8d91f39ab43244e63afebaed68ee21d2f1c325fd1242726a18")
+    assert (secret == "a9a2e742405c28f059349132923a99337ae7f71168b7485496e3365f5bc664ed")
 
     # Same if we do it by parameter name
     assert l1.rpc.makesecret(hex="73636220736563726574")["secret"] == secret
@@ -2310,6 +2312,8 @@ def test_emergencyrecover(node_factory, bitcoind):
     l1, l2 = node_factory.get_nodes(2, opts=[{}, {}])
     l1.rpc.connect(l2.info['id'], 'localhost', l2.port)
     c12, _ = l1.fundchannel(l2, 10**5)
+    stubs = l1.rpc.emergencyrecover()["stubs"]
+    assert l1.daemon.is_in_log('channel {} already exists!'.format(_['channel_id']))
 
     l1.stop()
 
@@ -2320,6 +2324,7 @@ def test_emergencyrecover(node_factory, bitcoind):
     stubs = l1.rpc.emergencyrecover()["stubs"]
     assert len(stubs) == 1
     assert stubs[0] == _["channel_id"]
+    assert l1.daemon.is_in_log('channel {} already exists!'.format(_['channel_id']))
 
     listfunds = l1.rpc.listfunds()["channels"][0]
     assert listfunds["short_channel_id"] == "1x1x1"

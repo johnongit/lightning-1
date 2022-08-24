@@ -175,12 +175,15 @@ like fire or computer confiscation.
 
 `/!\` WHO SHOULD DO THIS: Casual users.
 
-You can get the `backup` plugin here:
+You can find the full source for the `backup` plugin here:
 https://github.com/lightningd/plugins/tree/master/backup
 
 The `backup` plugin requires Python 3.
 
+* Download the source for the plugin.
+  * `git clone https://github.com/lightningd/plugins.git`
 * `cd` into its directory and install requirements.
+  * `cd plugins/backup`
   * `pip3 install -r requirements.txt`
 * Figure out where you will put the backup files.
   * Ideally you have an NFS or other network-based mount on your system,
@@ -391,13 +394,13 @@ it just gains the option to use a PostgreSQL database as well.
 If you just want to use PostgreSQL without using a cluster (for
 example, as an initial test without risking any significant funds),
 then after setting up a PostgreSQL database, you just need to add
-`--wallet=postgresql://${USER}:${PASSWORD}@${HOST}:${PORT}/${DB}`
+`--wallet=postgres://${USER}:${PASSWORD}@${HOST}:${PORT}/${DB}`
 to your `lightningd` config or invocation.
 
 To set up a cluster for a brand new node, follow this (external)
 [guide by @gabridome][gabridomeguide].
 
-[gabridomeguide]: https://github.com/gabridome/docs/blob/master/c-lightning_with_postgresql_reliability.md
+[gabridomeguide]: https://bit.ly/3KffmN3
 
 The above guide assumes you are setting up a new node from scratch.
 It is also specific to PostgreSQL 12, and setting up for other versions
