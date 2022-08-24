@@ -376,7 +376,10 @@ def test_v2_rbf_liquidity_ad(node_factory, bitcoind, chainparams):
 
     # This should be the accepter's amount
     fundings = only_one(only_one(l1.rpc.listpeers()['peers'])['channels'])['funding']
-    assert Millisatoshi(est_fees + amount * 1000) == Millisatoshi(fundings['remote_msat'])
+    assert Millisatoshi(amount * 1000) == fundings['remote_funds_msat']
+    assert Millisatoshi(est_fees + amount * 1000) == fundings['local_funds_msat']
+    assert Millisatoshi(est_fees) == fundings['fee_paid_msat']
+    assert 'fee_rcvd_msat' not in fundings
 
     # rbf the lease with a higher amount
     rate = int(find_next_feerate(l1, l2)[:-5])
@@ -406,7 +409,7 @@ def test_v2_rbf_liquidity_ad(node_factory, bitcoind, chainparams):
     # This should be the accepter's amount
     fundings = only_one(only_one(l1.rpc.listpeers()['peers'])['channels'])['funding']
     # FIXME: The lease goes away :(
-    assert Millisatoshi(0) == Millisatoshi(fundings['remote_msat'])
+    assert Millisatoshi(0) == Millisatoshi(fundings['remote_funds_msat'])
 
     wait_for(lambda: [c['active'] for c in l1.rpc.listchannels(l1.get_channel_scid(l2))['channels']] == [True, True])
 
@@ -1103,8 +1106,8 @@ def test_funder_options(node_factory, bitcoind):
     l2.fundchannel(l1, 10**6)
     chan_info = only_one(only_one(l2.rpc.listpeers(l1.info['id'])['peers'])['channels'])
     # l1 contributed nothing
-    assert chan_info['funding']['remote_msat'] == Millisatoshi('0msat')
-    assert chan_info['funding']['local_msat'] != Millisatoshi('0msat')
+    assert chan_info['funding']['remote_funds_msat'] == Millisatoshi('0msat')
+    assert chan_info['funding']['local_funds_msat'] != Millisatoshi('0msat')
 
     # Change all the options
     funder_opts = l1.rpc.call('funderupdate',
@@ -1136,8 +1139,8 @@ def test_funder_options(node_factory, bitcoind):
     l3.fundchannel(l1, 10**6)
     chan_info = only_one(only_one(l3.rpc.listpeers(l1.info['id'])['peers'])['channels'])
     # l1 contributed all its funds!
-    assert chan_info['funding']['remote_msat'] == Millisatoshi('9994255000msat')
-    assert chan_info['funding']['local_msat'] == Millisatoshi('1000000000msat')
+    assert chan_info['funding']['remote_funds_msat'] == Millisatoshi('9994255000msat')
+    assert chan_info['funding']['local_funds_msat'] == Millisatoshi('1000000000msat')
 
 
 @unittest.skipIf(TEST_NETWORK != 'regtest', 'elementsd doesnt yet support PSBT features we need')
@@ -1200,6 +1203,41 @@ def test_funder_contribution_limits(node_factory, bitcoind):
     l1.fundchannel(l3, 10**7)
     assert l3.daemon.is_in_log('Policy .* returned funding amount of 50000sat')
     assert l3.daemon.is_in_log(r'calling `signpsbt` .* 7 inputs')
+
+
+@pytest.mark.openchannel('v2')
+@pytest.mark.developer("requres 'dev-disconnect'")
+def test_inflight_dbload(node_factory, bitcoind):
+    """Bad db field access breaks Postgresql on startup with opening leases"""
+    disconnects = ["@WIRE_COMMITMENT_SIGNED"]
+    l1, l2 = node_factory.get_nodes(2, opts=[{'experimental-dual-fund': None,
+                                              'dev-no-reconnect': None,
+                                              'may_reconnect': True,
+                                              'disconnect': disconnects},
+                                             {'experimental-dual-fund': None,
+                                              'dev-no-reconnect': None,
+                                              'may_reconnect': True,
+                                              'funder-policy': 'match',
+                                              'funder-policy-mod': 100,
+                                              'lease-fee-base-sat': '100sat',
+                                              'lease-fee-basis': 100}])
+
+    feerate = 2000
+    amount = 500000
+    l1.fundwallet(20000000)
+    l2.fundwallet(20000000)
+
+    # l1 leases a channel from l2
+    l1.rpc.connect(l2.info['id'], 'localhost', l2.port)
+    rates = l1.rpc.dev_queryrates(l2.info['id'], amount, amount)
+    wait_for(lambda: len(l1.rpc.listpeers(l2.info['id'])['peers']) == 0)
+    l1.rpc.connect(l2.info['id'], 'localhost', l2.port)
+    l1.rpc.fundchannel(l2.info['id'], amount, request_amt=amount,
+                       feerate='{}perkw'.format(feerate),
+                       compact_lease=rates['compact_lease'])
+    l1.daemon.wait_for_log(r'dev_disconnect: @WIRE_COMMITMENT_SIGNED')
+
+    l1.restart()
 
 
 def test_zeroconf_mindepth(bitcoind, node_factory):
@@ -1473,3 +1511,104 @@ def test_buy_liquidity_ad_no_v2(node_factory, bitcoind):
         l1.rpc.fundchannel(l2.info['id'], amount, request_amt=amount,
                            feerate='{}perkw'.format(feerate),
                            compact_lease='029a002d000000004b2003e8')
+
+
+def test_scid_alias_private(node_factory, bitcoind):
+    """Test that we don't allow use of real scid for scid_alias-type channels"""
+    l1, l2, l3 = node_factory.line_graph(3, fundchannel=False, opts=[{}, {},
+                                                                     {'log-level': 'io'}])
+
+    l2.fundwallet(5000000)
+    l2.rpc.fundchannel(l3.info['id'], 'all', announce=False)
+
+    bitcoind.generate_block(1, wait_for_mempool=1)
+    wait_for(lambda: only_one(only_one(l2.rpc.listpeers(l3.info['id'])['peers'])['channels'])['state'] == 'CHANNELD_NORMAL')
+
+    chan = only_one(only_one(l2.rpc.listpeers(l3.info['id'])['peers'])['channels'])
+    assert chan['private'] is True
+    scid23 = chan['short_channel_id']
+    alias23 = chan['alias']['local']
+
+    # Create l1<->l2 channel, make sure l3 sees it so it will routehint via
+    # l2 (otherwise it sees it as a deadend!)
+    l1.fundwallet(5000000)
+    l1.rpc.fundchannel(l2.info['id'], 'all')
+    bitcoind.generate_block(6, wait_for_mempool=1)
+    wait_for(lambda: len(l3.rpc.listchannels(source=l1.info['id'])['channels']) == 1)
+
+    chan = only_one(only_one(l1.rpc.listpeers(l2.info['id'])['peers'])['channels'])
+    assert chan['private'] is False
+    scid12 = chan['short_channel_id']
+
+    # Make sure it sees both sides of private channel in gossmap!
+    wait_for(lambda: len(l3.rpc.listchannels()['channels']) == 4)
+
+    # BOLT #2:
+    # - if `channel_type` has `option_scid_alias` set:
+    #    - MUST NOT use the real `short_channel_id` in BOLT 11 `r` fields.
+    inv = l3.rpc.invoice(10, 'test_scid_alias_private', 'desc')
+    assert only_one(only_one(l1.rpc.decode(inv['bolt11'])['routes']))['short_channel_id'] == alias23
+
+    # BOLT #2:
+    # - if `channel_type` has `option_scid_alias` set:
+    #   - MUST NOT allow incoming HTLCs to this channel using the real `short_channel_id`
+    route = [{'amount_msat': 11,
+              'id': l2.info['id'],
+              'delay': 12,
+              'channel': scid12},
+             {'amount_msat': 10,
+              'id': l3.info['id'],
+              'delay': 6,
+              'channel': scid23}]
+    l1.rpc.sendpay(route, inv['payment_hash'], payment_secret=inv['payment_secret'])
+    with pytest.raises(RpcError) as err:
+        l1.rpc.waitsendpay(inv['payment_hash'])
+
+    # PERM|10
+    WIRE_UNKNOWN_NEXT_PEER = 0x4000 | 10
+    assert err.value.error['data']['failcode'] == WIRE_UNKNOWN_NEXT_PEER
+    assert err.value.error['data']['erring_node'] == l2.info['id']
+    assert err.value.error['data']['erring_channel'] == scid23
+
+    # BOLT #2
+    # - MUST always recognize the `alias` as a `short_channel_id` for incoming HTLCs to this channel.
+    route[1]['channel'] = alias23
+    l1.rpc.sendpay(route, inv['payment_hash'], payment_secret=inv['payment_secret'])
+    l1.rpc.waitsendpay(inv['payment_hash'])
+
+
+def test_zeroconf_multichan_forward(node_factory):
+    """The freedom to choose the forward channel bytes us when it is 0conf
+
+    Reported by Breez, we crashed when logging in `forward_htlc` when
+    the replacement channel was a zeroconf channel.
+
+    l2 -> l3 is a double channel with the zeroconf channel having a
+    higher spendable msat, which should cause it to be chosen instead.
+
+    """
+    node_id = '022d223620a359a47ff7f7ac447c85c46c923da53389221a0054c11c1e3ca31d59'
+    plugin_path = Path(__file__).parent / "plugins" / "zeroconf-selective.py"
+    l1, l2, l3 = node_factory.line_graph(3, opts=[
+        {},
+        {},
+        {
+            'plugin': str(plugin_path),
+            'zeroconf-allow': node_id,
+        }
+    ], fundamount=10**6, wait_for_announce=True)
+
+    # Just making sure the allowlisted node_id matches.
+    assert l2.info['id'] == node_id
+
+    # Now create a channel that is twice as large as the real channel,
+    # and don't announce it.
+    l2.fundwallet(10**7)
+    l2.rpc.fundchannel(l3.info['id'], 2 * 10**6, mindepth=0)
+
+    l2.daemon.wait_for_log(r'peer_in WIRE_FUNDING_LOCKED')
+    l3.daemon.wait_for_log(r'peer_in WIRE_FUNDING_LOCKED')
+
+    inv = l3.rpc.invoice(amount_msat=10000, label='lbl1', description='desc')['bolt11']
+    l1.rpc.pay(inv)
+    assert l2.daemon.is_in_log(r'Chose a better channel: .*')

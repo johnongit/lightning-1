@@ -6,7 +6,7 @@ from pyln.proto.onion import TlvPayload
 from pyln.testing.utils import EXPERIMENTAL_DUAL_FUND, FUNDAMOUNT
 from utils import (
     DEVELOPER, wait_for, only_one, sync_blockheight, TIMEOUT,
-    EXPERIMENTAL_FEATURES, VALGRIND, mine_funding_to_announce
+    EXPERIMENTAL_FEATURES, VALGRIND, mine_funding_to_announce, first_scid
 )
 import copy
 import os
@@ -572,7 +572,7 @@ def test_sendpay(node_factory):
         'amount_msat': amt,
         'id': l2.info['id'],
         'delay': 5,
-        'channel': '1x1x1'
+        'channel': first_scid(l1, l2)
     }
 
     # Insufficient funds.
@@ -671,7 +671,7 @@ def test_sendpay(node_factory):
     inv = l2.rpc.invoice(amt, 'testpayment3', 'desc')
     rhash = inv['payment_hash']
     assert only_one(l2.rpc.listinvoices('testpayment3')['invoices'])['status'] == 'unpaid'
-    routestep = {'amount_msat': amt * 2, 'id': l2.info['id'], 'delay': 5, 'channel': '1x1x1'}
+    routestep = {'amount_msat': amt * 2, 'id': l2.info['id'], 'delay': 5, 'channel': first_scid(l1, l2)}
     l1.rpc.sendpay([routestep], rhash, payment_secret=inv['payment_secret'])
     preimage3 = l1.rpc.waitsendpay(rhash)['payment_preimage']
     assert only_one(l2.rpc.listinvoices('testpayment3')['invoices'])['status'] == 'paid'
@@ -1331,9 +1331,14 @@ def test_forward_pad_fees_and_cltv(node_factory, bitcoind):
     wait_for(lambda: len(_income_tagset(l1, tags)) == 2)
     incomes = _income_tagset(l1, tags)
     # the balance on l3 should equal the invoice
-    bal = only_one(only_one(l3.rpc.bkpr_listbalances()['accounts'])['balances'])['balance_msat']
+    accts = l3.rpc.bkpr_listbalances()['accounts']
+    assert len(accts) == 2
+    wallet = accts[0]
+    chan_acct = accts[1]
+    assert wallet['account'] == 'wallet'
+    assert only_one(wallet['balances'])['balance_msat'] == Millisatoshi(0)
     assert incomes[0]['tag'] == 'invoice'
-    assert Millisatoshi(bal) == incomes[0]['debit_msat']
+    assert only_one(chan_acct['balances'])['balance_msat'] == incomes[0]['debit_msat']
     inve = only_one([e for e in l1.rpc.bkpr_listaccountevents()['events'] if e['tag'] == 'invoice'])
     assert inve['debit_msat'] == incomes[0]['debit_msat'] + incomes[1]['debit_msat']
 
@@ -1857,7 +1862,7 @@ def test_pay_routeboost(node_factory, bitcoind):
     assert 'routehint_modifications' not in only_one(status['pay'])
     assert 'local_exclusions' not in only_one(status['pay'])
     attempts = only_one(status['pay'])['attempts']
-    scid34 = only_one(l3.rpc.listpeers(l4.info['id'])['peers'])['channels'][0]['short_channel_id']
+    scid34 = only_one(l3.rpc.listpeers(l4.info['id'])['peers'])['channels'][0]['alias']['local']
     assert(len(attempts) == 1)
     a = attempts[0]
     assert(a['strategy'] == "Initial attempt")
@@ -1866,7 +1871,7 @@ def test_pay_routeboost(node_factory, bitcoind):
 
     # With dev-route option we can test longer routehints.
     if DEVELOPER:
-        scid45 = only_one(l4.rpc.listpeers(l5.info['id'])['peers'])['channels'][0]['short_channel_id']
+        scid45 = only_one(l4.rpc.listpeers(l5.info['id'])['peers'])['channels'][0]['alias']['local']
         routel3l4l5 = [{'id': l3.info['id'],
                         'short_channel_id': scid34,
                         'fee_base_msat': 1000,
@@ -3606,7 +3611,7 @@ def test_keysend_routehint(node_factory):
     routehints = [
         [
             {
-                'scid': l3.rpc.listpeers()['peers'][0]['channels'][0]['short_channel_id'],
+                'scid': l3.rpc.listpeers()['peers'][0]['channels'][0]['alias']['remote'],
                 'id': l2.info['id'],
                 'feebase': '1msat',
                 'feeprop': 10,
@@ -5062,7 +5067,8 @@ gives a routehint straight to us causes an issue
 
     inv = l3.rpc.invoice(10, "test", "test")['bolt11']
     decoded = l3.rpc.decodepay(inv)
-    assert(only_one(only_one(decoded['routes']))['short_channel_id'] == scid23)
+    assert(only_one(only_one(decoded['routes']))['short_channel_id']
+           == only_one(only_one(l3.rpc.listpeers()['peers'])['channels'])['alias']['remote'])
 
     l3.stop()
     with pytest.raises(RpcError, match=r'Destination .* is not reachable directly and all routehints were unusable'):

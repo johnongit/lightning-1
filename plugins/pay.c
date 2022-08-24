@@ -574,9 +574,10 @@ static const char *init(struct plugin *p,
 
 static void on_payment_success(struct payment *payment)
 {
-	struct payment *p;
+	struct payment *p, *nxt;
 	struct payment_tree_result result = payment_collect_result(payment);
 	struct json_stream *ret;
+	struct command *cmd;
 	assert(result.treestates & PAYMENT_STEP_SUCCESS);
 	assert(result.leafstates & PAYMENT_STEP_SUCCESS);
 	assert(result.preimage != NULL);
@@ -584,17 +585,25 @@ static void on_payment_success(struct payment *payment)
 	/* Iterate through any pending payments we suspended and
 	 * terminate them. */
 
-	list_for_each(&payments, p, list) {
+	list_for_each_safe(&payments, p, nxt, list) {
 		/* The result for the active payment is returned in
 		 * `payment_finished`. */
 		if (payment == p)
 			continue;
-		if (!sha256_eq(payment->payment_hash, p->payment_hash))
+
+		/* Both groupid and payment_hash must match. This is
+		 * because when we suspended the payment itself, we
+		 * set the groupid to match. */
+		if (!sha256_eq(payment->payment_hash, p->payment_hash) ||
+		    payment->groupid != p->groupid)
 			continue;
 		if (p->cmd == NULL)
 			continue;
 
-		ret = jsonrpc_stream_success(p->cmd);
+		cmd = p->cmd;
+		p->cmd = NULL;
+
+		ret = jsonrpc_stream_success(cmd);
 		json_add_node_id(ret, "destination", p->destination);
 		json_add_sha256(ret, "payment_hash", p->payment_hash);
 		json_add_timeabs(ret, "created_at", p->start_time);
@@ -614,8 +623,7 @@ static void on_payment_success(struct payment *payment)
 		json_add_preimage(ret, "payment_preimage", result.preimage);
 
 		json_add_string(ret, "status", "complete");
-		if (command_finished(p->cmd, ret)) {/* Ignore result. */}
-		p->cmd = NULL;
+		if (command_finished(cmd, ret)) {/* Ignore result. */}
 	}
 }
 
@@ -664,9 +672,9 @@ static void payment_json_add_attempts(struct json_stream *s,
 
 static void on_payment_failure(struct payment *payment)
 {
-	struct payment *p;
+	struct payment *p, *nxt;
 	struct payment_tree_result result = payment_collect_result(payment);
-	list_for_each(&payments, p, list)
+	list_for_each_safe(&payments, p, nxt, list)
 	{
 		struct json_stream *ret;
 		struct command *cmd;
@@ -675,13 +683,17 @@ static void on_payment_failure(struct payment *payment)
 		 * `payment_finished`. */
 		if (payment == p)
 			continue;
-		if (!sha256_eq(payment->payment_hash, p->payment_hash))
+
+		/* When we suspended we've set the groupid to match so
+		 * we'd know which calls were duplicates. */
+		if (!sha256_eq(payment->payment_hash, p->payment_hash) ||
+		    payment->groupid != p->groupid)
 			continue;
 		if (p->cmd == NULL)
 			continue;
 
 		cmd = p->cmd;
-
+		p->cmd = NULL;
 		if (p->aborterror != NULL) {
 			/* We set an explicit toplevel error message,
 			 * so let's report that. */
@@ -768,7 +780,6 @@ static void on_payment_failure(struct payment *payment)
 
 			if (command_finished(cmd, ret)) { /* Ignore result. */}
 		}
-		p->cmd = NULL;
 	}
 }
 
@@ -787,6 +798,10 @@ payment_listsendpays_previous(struct command *cmd, const char *buf,
 	u64 last_group = 0;
 	/* Do we have pending sendpays for the previous attempt? */
 	bool pending = false;
+
+	/* Group ID of the first pending payment, this will be the one
+	 * who's result gets replayed if we end up suspending. */
+	u64 pending_group_id = 0;
 	/* Did a prior attempt succeed? */
 	bool completed = false;
 
@@ -855,6 +870,11 @@ payment_listsendpays_previous(struct command *cmd, const char *buf,
 		status = json_get_member(buf, t, "status");
 		completed |= json_tok_streq(buf, status, "complete");
 		pending |= json_tok_streq(buf, status, "pending");
+
+		/* Remember the group id of the first pending group so
+		 * we can replay its result later. */
+		if (!pending_group_id && pending)
+			pending_group_id = groupid;
 	}
 
 	if (completed) {
@@ -874,7 +894,9 @@ payment_listsendpays_previous(struct command *cmd, const char *buf,
 		/* We suspend this call and wait for the
 		 * `on_payment_success` or `on_payment_failure`
 		 * handler of the currently running payment to notify
-		 * us about its completion. */
+		 * us about its completion. We latch on to the result
+		 * from the call we extracted above. */
+		p->groupid = pending_group_id;
 		return command_still_pending(cmd);
 	}
 	p->groupid = last_group + 1;

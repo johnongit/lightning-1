@@ -4,7 +4,7 @@ lightning-invoice -- Command for accepting payments
 SYNOPSIS
 --------
 
-**invoice** *msatoshi* *label* *description* [*expiry*]
+**invoice** *amount_msat* *label* *description* [*expiry*]
 [*fallbacks*] [*preimage*] [*exposeprivatechannels*] [*cltv*] [*deschashonly*]
 
 DESCRIPTION
@@ -16,7 +16,7 @@ lightning daemon can use to pay this invoice. This token includes a
 *route hint* description of an incoming channel with capacity to pay the
 invoice, if any exists.
 
-The *msatoshi* parameter can be the string "any", which creates an
+The *amount_msat* parameter can be the string "any", which creates an
 invoice that can be paid with any amount. Otherwise it is a positive value in
 millisatoshi precision; it can be a whole number, or a whole number
 ending in *msat* or *sat*, or a number with three decimal places ending
@@ -54,7 +54,7 @@ If specified, *exposeprivatechannels* overrides the default route hint
 logic, which will use unpublished channels only if there are no
 published channels. If *true* unpublished channels are always considered
 as a route hint candidate; if *false*, never.  If it is a short channel id
-(e.g. *1x1x3*) or array of short channel ids, only those specific channels
+(e.g. *1x1x3*) or array of short channel ids (or a remote alias), only those specific channels
 will be considered candidates, even if they are public or dead-ends.
 
 The route hint is selected from the set of incoming channels of which:

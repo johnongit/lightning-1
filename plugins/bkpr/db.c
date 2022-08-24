@@ -98,9 +98,10 @@ static struct migration db_migrations[] = {
 	{SQL("ALTER TABLE chain_events ADD stealable INTEGER;"), NULL},
 	{SQL("ALTER TABLE chain_events ADD ev_desc TEXT DEFAULT NULL;"), NULL},
 	{SQL("ALTER TABLE channel_events ADD ev_desc TEXT DEFAULT NULL;"), NULL},
+	{SQL("ALTER TABLE channel_events ADD rebalance_id BIGINT DEFAULT NULL;"), NULL},
 };
 
-static bool db_migrate(struct plugin *p, struct db *db)
+static bool db_migrate(struct plugin *p, struct db *db, bool *created)
 {
 	/* Read current version from database */
 	int current, orig, available;
@@ -109,9 +110,11 @@ static bool db_migrate(struct plugin *p, struct db *db)
 	orig = current = db_get_version(db);
 	available = ARRAY_SIZE(db_migrations) - 1;
 
-	if (current == -1)
+	*created = false;
+	if (current == -1) {
+		*created = true;
 		plugin_log(p, LOG_INFORM, "Creating database");
-	else if (available < current)
+	} else if (available < current)
 		plugin_err(p,
 			   "Refusing to migrate down from version %u to %u",
 			   current, available);
@@ -154,7 +157,8 @@ void db_fatal(const char *fmt, ...)
 }
 #endif /* DB_FATAL */
 
-struct db *db_setup(const tal_t *ctx, struct plugin *p, char *db_dsn)
+struct db *db_setup(const tal_t *ctx, struct plugin *p,
+		    const char *db_dsn, bool *created)
 {
 	bool migrated;
 	struct db *db;
@@ -165,7 +169,7 @@ struct db *db_setup(const tal_t *ctx, struct plugin *p, char *db_dsn)
 	db->report_changes_fn = NULL;
 
 	db_begin_transaction(db);
-	migrated = db_migrate(p, db);
+	migrated = db_migrate(p, db, created);
 	db->data_version = db_data_version_get(db);
 	db_commit_transaction(db);
 
