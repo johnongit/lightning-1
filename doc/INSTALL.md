@@ -1,18 +1,19 @@
 Install
 =======
 
-1. [Library Requirements](#library-requirements)
-2. [Ubuntu](#to-build-on-ubuntu)
-3. [Fedora](#to-build-on-fedora)
-4. [FreeBSD](#to-build-on-freebsd)
-5. [OpenBSD](#to-build-on-openbsd)
-6. [NixOS](#to-build-on-nixos)
-7. [macOS](#to-build-on-macos)
-8. [Android](#to-cross-compile-for-android)
-9. [Raspberry Pi](#to-cross-compile-for-raspberry-pi)
-10. [Armbian](#to-compile-for-armbian)
-11. [Alpine](#to-compile-for-alpine)
-12. [Additional steps](#additional-steps)
+- [Library Requirements](#library-requirements)
+- [Ubuntu](#to-build-on-ubuntu)
+- [Fedora](#to-build-on-fedora)
+- [FreeBSD](#to-build-on-freebsd)
+- [OpenBSD](#to-build-on-openbsd)
+- [NixOS](#to-build-on-nixos)
+- [macOS](#to-build-on-macos)
+- [Arch Linux](#to-build-on-arch-linux)
+- [Android](#to-cross-compile-for-android)
+- [Raspberry Pi](#to-cross-compile-for-raspberry-pi)
+- [Armbian](#to-compile-for-armbian)
+- [Alpine](#to-compile-for-alpine)
+- [Additional steps](#additional-steps)
 
 Library Requirements
 --------------------
@@ -63,7 +64,9 @@ Checkout a release tag:
 For development or running tests, get additional dependencies:
 
     sudo apt-get install -y valgrind libpq-dev shellcheck cppcheck \
-      libsecp256k1-dev jq
+      libsecp256k1-dev jq lowdown
+
+If you can't install `lowdown`, a version will be built in-tree.
 
 If you want to build the Rust plugins (currently, cln-grpc):
 
@@ -74,7 +77,7 @@ There are two ways to build core lightning, and this depends on how you want use
 To build cln to just install a tagged or master version you can use the following commands:
 
     pip3 install --upgrade pip
-    pip3 install mako mistune==0.8.4 mrkd
+    pip3 install mako
     ./configure
     make
     sudo make install
@@ -85,12 +88,15 @@ To build core lightning for development purpose you can use the following comman
 
     pip3 install poetry
     poetry shell
+
+This will put you in a new shell to enter the following commands:
+
     poetry install
     ./configure --enable-developer
     make
     make check VALGRIND=0
 
-optionaly you can consider to use the `-j$(nproc)` in front of the `make` command to speed up the compilation.
+optionally, add `-j$(nproc)` after `make` to speed up compilation. (e.g. `make -j$(nproc)`)
 
 Running lightning:
 
@@ -173,12 +179,6 @@ fiddle with compile time options:
 
     # cd /usr/ports/net-p2p/c-lightning && make install
 
-mrkd is required to build man pages from markdown files (not done by the port):
-
-    # cd /usr/ports/devel/py-pip && make install
-    $ pip install --user poetry
-    $ poetry install
-
 See `/usr/ports/net-p2p/c-lightning/Makefile` for instructions on how to
 build from an arbitrary git commit, instead of the latest release tag.
 
@@ -208,7 +208,7 @@ pkg_add git python gmake py3-pip libtool gmp
 pkg_add automake # (select highest version, automake1.16.2 at time of writing)
 pkg_add autoconf # (select highest version, autoconf-2.69p2 at time of writing)
 ```
-Install `mako` and `mrkd` otherwise we run into build errors:
+Install `mako` otherwise we run into build errors:
 ```
 pip3.7 install --user poetry
 poetry install
@@ -304,6 +304,37 @@ need to include `testnet=1`
     bitcoind &
     ./lightningd/lightningd &
     ./cli/lightning-cli help
+
+To Build on Arch Linux
+---------------------
+
+Install dependencies:
+
+```
+pacman --sync autoconf automake gcc git make python-pip
+pip install --user poetry
+```
+
+Clone Core Lightning:
+
+```
+$ git clone https://github.com/ElementsProject/lightning.git
+$ cd lightning
+```
+
+Build Core Lightning:
+
+```
+python -m poetry install
+./configure
+python -m poetry run make
+```
+
+Launch Core Lightning:
+
+```
+./lightningd/lightningd
+```
 
 To cross-compile for Android
 --------------------
@@ -414,8 +445,8 @@ To compile for Alpine
 Get dependencies:
 ```
 apk update
-apk add ca-certificates alpine-sdk autoconf automake git libtool \
-  gmp-dev sqlite-dev python python3 py3-mako net-tools zlib-dev libsodium gettext
+apk add --virtual .build-deps ca-certificates alpine-sdk autoconf automake git libtool \
+  gmp-dev sqlite-dev python3 py3-mako net-tools zlib-dev libsodium gettext
 ```
 Clone lightning:
 ```
@@ -432,8 +463,11 @@ make install
 Clean up:
 ```
 cd .. && rm -rf lightning
-apk del ca-certificates alpine-sdk autoconf automake git libtool \
-  gmp-dev sqlite python3 py3-mako net-tools zlib-dev libsodium gettext
+apk del .build-deps
+```
+Install runtime dependencies:
+```
+apk add gmp libgcc libsodium sqlite-libs zlib
 ```
 
 Additional steps

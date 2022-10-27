@@ -32,20 +32,21 @@ RETURN VALUE
 
 [comment]: # (GENERATE-FROM-SCHEMA-START)
 On success, an object is returned, containing:
+
 - **label** (string): the label for the invoice
-- **payment_hash** (hash): the hash of the *payment_preimage* which will prove payment (always 64 characters)
+- **payment\_hash** (hash): the hash of the *payment_preimage* which will prove payment (always 64 characters)
 - **status** (string): Whether it has been paid, or can no longer be paid (one of "paid", "expired", "unpaid")
 - **description** (string): Description extracted from **bolt11** or **bolt12**
-- **expires_at** (u64): UNIX timestamp of when invoice expires (or expired)
+- **expires\_at** (u64): UNIX timestamp of when invoice expires (or expired)
 - **bolt11** (string, optional): the bolt11 string (always present unless **bolt12** is)
 - **bolt12** (string, optional): the bolt12 string instead of **bolt11** (**experimental-offers** only)
-- **amount_msat** (msat, optional): The amount of the invoice (if it has one)
-- **pay_index** (u64, optional): Incrementing id for when this was paid (**status** *paid* only)
-- **amount_received_msat** (msat, optional): Amount actually received (**status** *paid* only)
-- **paid_at** (u64, optional): UNIX timestamp of when invoice was paid (**status** *paid* only)
-- **payment_preimage** (secret, optional): the proof of payment: SHA256 of this **payment_hash** (always 64 characters)
-- **local_offer_id** (hex, optional): the *id* of our offer which created this invoice (**experimental-offers** only). (always 64 characters)
-- **payer_note** (string, optional): the optional *payer_note* from invoice_request which created this invoice (**experimental-offers** only).
+- **amount\_msat** (msat, optional): The amount of the invoice (if it has one)
+- **pay\_index** (u64, optional): Incrementing id for when this was paid (**status** *paid* only)
+- **amount\_received\_msat** (msat, optional): Amount actually received (**status** *paid* only)
+- **paid\_at** (u64, optional): UNIX timestamp of when invoice was paid (**status** *paid* only)
+- **payment\_preimage** (secret, optional): the proof of payment: SHA256 of this **payment_hash** (always 64 characters)
+- **local\_offer\_id** (hex, optional): the *id* of our offer which created this invoice (**experimental-offers** only). (always 64 characters)
+- **payer\_note** (string, optional): the optional *payer_note* from invoice_request which created this invoice (**experimental-offers** only).
 
 [comment]: # (GENERATE-FROM-SCHEMA-END)
 
@@ -74,4 +75,4 @@ RESOURCES
 
 Main web site: <https://github.com/ElementsProject/lightning>
 
-[comment]: # ( SHA256STAMP:34ba2cc01db3e516b257dbe6a47cf764d1e34b85ee89fd4b49aed1fc2e0bb0ba)
+[comment]: # ( SHA256STAMP:9fc2c7cb6e5980774a768dd9ddfe81e254c084554c159e6b07e92e703dc10595)

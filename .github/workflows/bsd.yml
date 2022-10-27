@@ -39,6 +39,7 @@ jobs:
             bash \
             gettext \
             sqlite3 \
+            lowdown \
             curl
 
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain nightly-2021-08-3z1
@@ -63,13 +64,12 @@ jobs:
             blinker \
             flake8 \
             mako \
-            mrkd \
             pytest-sentry \
             pytest-test-groups==1.0.3 \
             pytest-custom-exit-code==0.3.0 \
             pytest-json-report
 
-          git clone https://github.com/lightningnetwork/lightning-rfc.git ../lightning-rfc
+          git clone https://github.com/lightning/bolts.git ../bolts
           # fatal: unsafe repository ('/Users/runner/work/lightning/lightning' is owned by someone else)
           git config --global --add safe.directory `pwd`
           git submodule update --init --recursive

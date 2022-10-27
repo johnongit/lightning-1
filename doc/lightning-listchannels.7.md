@@ -32,21 +32,22 @@ RETURN VALUE
 
 [comment]: # (GENERATE-FROM-SCHEMA-START)
 On success, an object containing **channels** is returned.  It is an array of objects, where each object contains:
+
 - **source** (pubkey): the source node
 - **destination** (pubkey): the destination node
-- **short_channel_id** (short_channel_id): short channel id of channel
+- **short\_channel\_id** (short\_channel\_id): short channel id of channel
 - **public** (boolean): true if this is announced (otherwise it must be our channel)
-- **amount_msat** (msat): the total capacity of this channel (always a whole number of satoshis)
-- **message_flags** (u8): as defined by BOLT #7
-- **channel_flags** (u8): as defined by BOLT #7
+- **amount\_msat** (msat): the total capacity of this channel (always a whole number of satoshis)
+- **message\_flags** (u8): as defined by BOLT #7
+- **channel\_flags** (u8): as defined by BOLT #7
 - **active** (boolean): true unless source has disabled it, or it's a local channel and the peer is disconnected or it's still opening or closing
-- **last_update** (u32): UNIX timestamp on the last channel_update from *source*
-- **base_fee_millisatoshi** (u32): Base fee changed by *source* to use this channel
-- **fee_per_millionth** (u32): Proportional fee changed by *source* to use this channel, in parts-per-million
+- **last\_update** (u32): UNIX timestamp on the last channel_update from *source*
+- **base\_fee\_millisatoshi** (u32): Base fee changed by *source* to use this channel
+- **fee\_per\_millionth** (u32): Proportional fee changed by *source* to use this channel, in parts-per-million
 - **delay** (u32): The number of blocks delay required by *source* to use this channel
-- **htlc_minimum_msat** (msat): The smallest payment *source* will allow via this channel
+- **htlc\_minimum\_msat** (msat): The smallest payment *source* will allow via this channel
 - **features** (hex): BOLT #9 features bitmap for this channel
-- **htlc_maximum_msat** (msat, optional): The largest payment *source* will allow via this channel
+- **htlc\_maximum\_msat** (msat, optional): The largest payment *source* will allow via this channel
 
 [comment]: # (GENERATE-FROM-SCHEMA-END)
 
@@ -76,6 +77,6 @@ Main web site: <https://github.com/ElementsProject/lightning>
 Lightning RFC site
 
 -   BOLT \#7:
-    <https://github.com/lightningnetwork/lightning-rfc/blob/master/07-routing-gossip.md>
+    <https://github.com/lightning/bolts/blob/master/07-routing-gossip.md>
 
-[comment]: # ( SHA256STAMP:43c6c45c0672482610c1bdd607d5bf6ed26d6c42cfc4fbde4a5d24f2eb1d9a2d)
+[comment]: # ( SHA256STAMP:baf45b77bd2ba22e245e007b57d8e5f70d06cbf9cebf7ed1431da6a0cf6f367a)

@@ -1,5 +1,6 @@
 #include "config.h"
 #include <ccan/io/io.h>
+#include <ccan/tal/str/str.h>
 #include <common/json_parse.h>
 #include <common/memleak.h>
 #include <db/exec.h>
@@ -11,6 +12,7 @@
 struct plugin_hook_request {
 	struct list_head call_chain;
 	struct plugin *plugin;
+	const char *cmd_id;
 	const struct plugin_hook *hook;
 	void *cb_arg;
 	struct db *db;
@@ -167,7 +169,8 @@ static void plugin_hook_callback(const char *buffer, const jsmntok_t *toks,
 	tal_del_destructor(last, plugin_hook_killed);
 	tal_free(last);
 
-	if (r->ld->state == LD_STATE_SHUTDOWN) {
+	/* Actually, if it dies during shutdown, *don't* process result! */
+	if (!buffer && r->ld->state == LD_STATE_SHUTDOWN) {
 		log_debug(r->ld->log,
 			  "Abandoning plugin hook call due to shutdown");
 		return;
@@ -231,7 +234,7 @@ static void plugin_hook_call_next(struct plugin_hook_request *ph_req)
 
 	log_debug(ph_req->ld->log, "Calling %s hook of plugin %s",
 		  ph_req->hook->name, ph_req->plugin->shortname);
-	req = jsonrpc_request_start(NULL, hook->name,
+	req = jsonrpc_request_start(NULL, hook->name, ph_req->cmd_id,
 				    plugin_get_log(ph_req->plugin),
 				    NULL,
 				    plugin_hook_callback, ph_req);
@@ -242,6 +245,7 @@ static void plugin_hook_call_next(struct plugin_hook_request *ph_req)
 }
 
 bool plugin_hook_call_(struct lightningd *ld, const struct plugin_hook *hook,
+		       const char *cmd_id TAKES,
 		       tal_t *cb_arg STEALS)
 {
 	struct plugin_hook_request *ph_req;
@@ -257,6 +261,10 @@ bool plugin_hook_call_(struct lightningd *ld, const struct plugin_hook *hook,
 		ph_req->cb_arg = tal_steal(ph_req, cb_arg);
 		ph_req->db = ld->wallet->db;
 		ph_req->ld = ld;
+		if (cmd_id)
+			ph_req->cmd_id = tal_strdup(ph_req, cmd_id);
+		else
+			ph_req->cmd_id = NULL;
 
 		list_head_init(&ph_req->call_chain);
 		for (size_t i=0; i<tal_count(hook->hooks); i++) {
@@ -370,8 +378,9 @@ void plugin_hook_db_sync(struct db *db)
 		dwh_req->ph_req = ph_req;
 		dwh_req->num_hooks = &num_hooks;
 
+		/* FIXME: id_prefix from caller? */
 		/* FIXME: do IO logging for this! */
-		req = jsonrpc_request_start(NULL, hook->name, NULL, NULL,
+		req = jsonrpc_request_start(NULL, hook->name, NULL, NULL, NULL,
 					    db_hook_response,
 					    dwh_req);
 
@@ -379,8 +388,8 @@ void plugin_hook_db_sync(struct db *db)
 			     db_data_version_get(db));
 
 		json_array_start(req->stream, "writes");
-		for (size_t i = 0; i < tal_count(changes); i++)
-			json_add_string(req->stream, NULL, changes[i]);
+		for (size_t j = 0; j < tal_count(changes); j++)
+			json_add_string(req->stream, NULL, changes[j]);
 		json_array_end(req->stream);
 		jsonrpc_request_end(req);
 
@@ -489,8 +498,7 @@ static struct plugin **plugin_hook_make_ordered(const tal_t *ctx,
 	/* Add edges. */
 	for (size_t i = 0; i < tal_count(graph); i++) {
 		for (size_t j = 0; j < tal_count(graph[i].hook->before); j++) {
-			struct hook_node *n = find_hook(graph,
-							graph[i].hook->before[j]);
+			n = find_hook(graph, graph[i].hook->before[j]);
 			if (!n) {
 				/* This is useful for typos! */
 				log_debug(graph[i].hook->plugin->log,
@@ -503,8 +511,7 @@ static struct plugin **plugin_hook_make_ordered(const tal_t *ctx,
 			n->num_incoming++;
 		}
 		for (size_t j = 0; j < tal_count(graph[i].hook->after); j++) {
-			struct hook_node *n = find_hook(graph,
-							graph[i].hook->after[j]);
+			n = find_hook(graph, graph[i].hook->after[j]);
 			if (!n) {
 				/* This is useful for typos! */
 				log_debug(graph[i].hook->plugin->log,

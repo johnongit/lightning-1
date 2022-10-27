@@ -6,6 +6,7 @@
 #include <common/errcode.h>
 /* Simple helpers are here: this file contains heavier ones */
 #include <common/json_parse_simple.h>
+#include <common/jsonrpc_errors.h>
 
 struct json_escape;
 struct json_stream;
@@ -49,7 +50,8 @@ bool json_to_millionths(const char *buffer, const jsmntok_t *tok,
 bool json_to_int(const char *buffer, const jsmntok_t *tok, int *num);
 
 /* Extract an error code from this (may be a string, or a number literal) */
-bool json_to_errcode(const char *buffer, const jsmntok_t *tok, errcode_t *errcode);
+bool json_to_jsonrpc_errcode(const char *buffer, const jsmntok_t *tok,
+			     enum jsonrpc_errcode *errcode);
 
 /* Split a json token into 2 tokens given a splitting character */
 bool split_tok(const char *buffer, const jsmntok_t *tok,
@@ -113,12 +115,8 @@ bool json_to_coin_mvt_tag(const char *buffer, const jsmntok_t *tok,
 			  enum mvt_tag *tag);
 
 /* Extract reply path from this JSON */
-struct tlv_onionmsg_payload_reply_path *
-json_to_reply_path(const tal_t *ctx, const char *buffer, const jsmntok_t *tok);
-
-/* Obsolete version! */
-struct tlv_obs2_onionmsg_payload_reply_path *
-json_to_obs2_reply_path(const tal_t *ctx, const char *buffer, const jsmntok_t *tok);
+struct blinded_path *
+json_to_blinded_path(const tal_t *ctx, const char *buffer, const jsmntok_t *tok);
 
 bool json_tok_channel_id(const char *buffer, const jsmntok_t *tok,
 			 struct channel_id *cid);

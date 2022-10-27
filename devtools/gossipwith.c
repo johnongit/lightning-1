@@ -170,7 +170,6 @@ static struct io_plan *handshake_success(struct io_conn *conn,
 					 struct oneshot *timer,
 					 char **args)
 {
-	u8 *msg;
 	int peer_fd = io_conn_fd(conn);
 	struct pollfd pollfd[2];
 
@@ -179,6 +178,7 @@ static struct io_plan *handshake_success(struct io_conn *conn,
 				OPTIONAL_FEATURE(OPT_INITIAL_ROUTING_SYNC));
 
 	if (!no_init) {
+		u8 *msg;
 		struct tlv_init_tlvs *tlvs = NULL;
 		if (explicit_network) {
 			tlvs = tlv_init_tlvs_new(NULL);
@@ -326,7 +326,7 @@ int main(int argc, char *argv[])
 				    (int)(at - argv[1]), argv[1]);
 
 	if (!parse_wireaddr_internal(at+1, &addr, chainparams_get_ln_port(chainparams), NULL,
-				     true, false, true, &err_msg))
+				     true, false, &err_msg))
 		opt_usage_exit_fail("%s '%s'", err_msg, argv[1]);
 
 	switch (addr.itype) {

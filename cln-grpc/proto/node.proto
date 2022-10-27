@@ -52,6 +52,7 @@ service Node {
 	rpc ListForwards(ListforwardsRequest) returns (ListforwardsResponse) {}
 	rpc ListPays(ListpaysRequest) returns (ListpaysResponse) {}
 	rpc Ping(PingRequest) returns (PingResponse) {}
+	rpc SetChannel(SetchannelRequest) returns (SetchannelResponse) {}
 	rpc SignMessage(SignmessageRequest) returns (SignmessageResponse) {}
 	rpc Stop(StopRequest) returns (StopResponse) {}
 }
@@ -71,6 +72,7 @@ message GetinfoResponse {
 	string lightning_dir = 9;
 	uint32 blockheight = 11;
 	string network = 12;
+	optional uint64 msatoshi_fees_collected = 18;
 	Amount fees_collected_msat = 13;
 	repeated GetinfoAddress address = 14;
 	repeated GetinfoBinding binding = 15;
@@ -324,6 +326,7 @@ message SendpayResponse {
 	optional Amount amount_msat = 5;
 	optional bytes destination = 6;
 	uint64 created_at = 7;
+	optional uint64 completed_at = 15;
 	Amount amount_sent_msat = 8;
 	optional string label = 9;
 	optional uint64 partid = 10;
@@ -402,7 +405,7 @@ message CloseRequest {
 	optional uint32 unilateraltimeout = 2;
 	optional string destination = 3;
 	optional string fee_negotiation_step = 4;
-	optional bytes wrong_funding = 5;
+	optional Outpoint wrong_funding = 5;
 	optional bool force_lease_closed = 6;
 	repeated Feerate feerange = 7;
 }
@@ -707,7 +710,7 @@ message ListsendpaysPayments {
 		COMPLETE = 2;
 	}
 	uint64 id = 1;
-	optional uint64 groupid = 2;
+	uint64 groupid = 2;
 	bytes payment_hash = 3;
 	ListsendpaysPaymentsStatus status = 4;
 	optional Amount amount_msat = 5;
@@ -918,6 +921,7 @@ message WaitsendpayResponse {
 	optional Amount amount_msat = 5;
 	optional bytes destination = 6;
 	uint64 created_at = 7;
+	optional double completed_at = 14;
 	Amount amount_sent_msat = 8;
 	optional string label = 9;
 	optional uint64 partid = 10;
@@ -986,7 +990,7 @@ message KeysendExtratlvs {
 }
 
 message FundpsbtRequest {
-	Amount satoshi = 1;
+	AmountOrAll satoshi = 1;
 	Feerate feerate = 2;
 	uint32 startweight = 3;
 	optional uint32 minconf = 4;
@@ -1156,6 +1160,7 @@ message FundchannelRequest {
 	optional string compact_lease = 8;
 	repeated Outpoint utxos = 11;
 	optional uint32 mindepth = 12;
+	optional Amount reserve = 13;
 }
 
 message FundchannelResponse {
@@ -1190,6 +1195,7 @@ message GetrouteRoute {
 	bytes id = 1;
 	string channel = 2;
 	uint32 direction = 3;
+	optional uint64 msatoshi = 7;
 	Amount amount_msat = 4;
 	uint32 delay = 5;
 	GetrouteRouteStyle style = 6;
@@ -1226,11 +1232,12 @@ message ListforwardsForwards {
 		TLV = 1;
 	}
 	string in_channel = 1;
+	optional uint64 in_htlc_id = 10;
 	Amount in_msat = 2;
 	ListforwardsForwardsStatus status = 3;
 	double received_time = 4;
 	optional string out_channel = 5;
-	optional bytes payment_hash = 6;
+	optional uint64 out_htlc_id = 11;
 	optional ListforwardsForwardsStyle style = 9;
 	optional Amount fee_msat = 7;
 	optional Amount out_msat = 8;
@@ -1263,12 +1270,13 @@ message ListpaysPays {
 	ListpaysPaysStatus status = 2;
 	optional bytes destination = 3;
 	uint64 created_at = 4;
+	optional uint64 completed_at = 12;
 	optional string label = 5;
 	optional string bolt11 = 6;
 	optional string description = 11;
 	optional string bolt12 = 7;
-	optional Amount amount_msat = 8;
-	optional Amount amount_sent_msat = 9;
+	optional bytes preimage = 13;
+	optional uint64 number_of_parts = 14;
 	optional bytes erroronion = 10;
 }
 
@@ -1280,6 +1288,31 @@ message PingRequest {
 
 message PingResponse {
 	uint32 totlen = 1;
+}
+
+message SetchannelRequest {
+	string id = 1;
+	optional Amount feebase = 2;
+	optional uint32 feeppm = 3;
+	optional Amount htlcmin = 4;
+	optional Amount htlcmax = 5;
+	optional uint32 enforcedelay = 6;
+}
+
+message SetchannelResponse {
+	repeated SetchannelChannels channels = 1;
+}
+
+message SetchannelChannels {
+	bytes peer_id = 1;
+	bytes channel_id = 2;
+	optional string short_channel_id = 3;
+	Amount fee_base_msat = 4;
+	uint32 fee_proportional_millionths = 5;
+	Amount minimum_htlc_out_msat = 6;
+	optional string warning_htlcmin_too_low = 7;
+	Amount maximum_htlc_out_msat = 8;
+	optional string warning_htlcmax_too_high = 9;
 }
 
 message SignmessageRequest {

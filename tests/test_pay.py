@@ -3,7 +3,7 @@ from fixtures import TEST_NETWORK
 from io import BytesIO
 from pyln.client import RpcError, Millisatoshi
 from pyln.proto.onion import TlvPayload
-from pyln.testing.utils import EXPERIMENTAL_DUAL_FUND, FUNDAMOUNT
+from pyln.testing.utils import EXPERIMENTAL_DUAL_FUND, FUNDAMOUNT, scid_to_int
 from utils import (
     DEVELOPER, wait_for, only_one, sync_blockheight, TIMEOUT,
     EXPERIMENTAL_FEATURES, VALGRIND, mine_funding_to_announce, first_scid
@@ -266,7 +266,8 @@ def test_pay_disconnect(node_factory, bitcoind):
     route = l1.rpc.getroute(l2.info['id'], 123000, 1)["route"]
 
     l2.stop()
-    wait_for(lambda: only_one(l1.rpc.listpeers(l2.info['id'])['peers'])['connected'] is False)
+    # Make sure channeld has exited!
+    wait_for(lambda: 'owner' not in only_one(only_one(l1.rpc.listpeers(l2.info['id'])['peers'])['channels']))
 
     # Can't pay while its offline.
     with pytest.raises(RpcError, match=r'failed: WIRE_TEMPORARY_CHANNEL_FAILURE \(First peer not ready\)'):
@@ -1389,7 +1390,7 @@ def test_forward_stats(node_factory, bitcoind):
     # Select all forwardings, ordered by htlc_id to ensure the order
     # matches below
     forwardings = l2.db_query("SELECT *, in_msatoshi - out_msatoshi as fee "
-                              "FROM forwarded_payments "
+                              "FROM forwards "
                               "ORDER BY in_htlc_id;")
     assert(len(forwardings) == 3)
     states = [f['state'] for f in forwardings]
@@ -1957,7 +1958,7 @@ def test_setchannel_usage(node_factory, bitcoind):
     def channel_get_config(scid):
         return l1.db.query(
             'SELECT feerate_base, feerate_ppm, htlc_minimum_msat, htlc_maximum_msat FROM channels '
-            'WHERE short_channel_id=\'{}\';'.format(scid))
+            'WHERE scid={};'.format(scid_to_int(scid)))
 
     # get short channel id
     scid = l1.get_channel_scid(l2)
@@ -2045,8 +2046,17 @@ def test_setchannel_usage(node_factory, bitcoind):
 
     # check if negative fees raise error and DB keeps values
     # JSONRPC2_INVALID_PARAMS := -32602
+    from pyln.client import LightningRpc
     with pytest.raises(RpcError, match=r'-32602'):
-        l1.rpc.setchannel(scid, -1, -1)
+        # Need to bypass pyln since it'd check args locally. We also
+        # have to sidestep the schema validation, it attempts to
+        # instantiate Millisatoshis and fails due to the non-negative
+        # constraint.
+        LightningRpc.call(l1.rpc, 'setchannel', {
+            "id": scid,
+            "feebase": -1,
+            "feeppm": -1
+        })
 
     # test if zero fees is possible
     result = l1.rpc.setchannel(scid, 0, 0)
@@ -2091,11 +2101,18 @@ def test_setchannel_usage(node_factory, bitcoind):
 
     # check if 'ppm' values greater than u32_max fail
     with pytest.raises(RpcError, match=r'-32602.*ppm: should be an integer: invalid token'):
-        l1.rpc.setchannel(scid, 0, 2**32)
+        LightningRpc.call(l1.rpc, 'setchannel', payload={
+            "id": scid,
+            'feebase': 0,
+            'feeppm': 2**32,
+        })
 
     # check if 'base' values greater than u32_max fail
     with pytest.raises(RpcError, match=r'-32602.*base: exceeds u32 max: invalid token'):
-        l1.rpc.setchannel(scid, 2**32)
+        LightningRpc.call(l1.rpc, 'setchannel', payload={
+            "id": scid,
+            "feebase": 2**32,
+        })
 
 
 @pytest.mark.developer("gossip without DEVELOPER=1 is slow")
@@ -2836,26 +2853,22 @@ def test_shadow_routing(node_factory):
 def test_createonion_rpc(node_factory):
     l1 = node_factory.get_node()
 
+    # From bolt04/onion-test.json:
     hops = [{
         "pubkey": "02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619",
-        # legacy
-        "payload": "000000000000000000000000000000000000000000000000000000000000000000"
+        "payload": "1202023a98040205dc06080000000000000001"
     }, {
         "pubkey": "0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c",
-        # tlv (20 bytes)
-        "payload": "140101010101010101000000000000000100000001"
+        "payload": "52020236b00402057806080000000000000002fd02013c0102030405060708090a0b0c0d0e0f0102030405060708090a0b0c0d0e0f0102030405060708090a0b0c0d0e0f0102030405060708090a0b0c0d0e0f"
     }, {
         "pubkey": "027f31ebc5462c1fdce1b737ecff52d37d75dea43ce11c74d25aa297165faa2007",
-        # TLV (256 bytes)
-        "payload": "fd0100000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff"
+        "payload": "12020230d4040204e206080000000000000003"
     }, {
         "pubkey": "032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991",
-        # tlv (20 bytes)
-        "payload": "140303030303030303000000000000000300000003"
+        "payload": "1202022710040203e806080000000000000004"
     }, {
         "pubkey": "02edabbd16b41c8371b92ef2f04c1185b4f03b6dcd52ba9b78d9d7c89c8f221145",
-        # legacy
-        "payload": "000404040404040404000000000000000400000004000000000000000000000000"
+        "payload": "fd011002022710040203e8082224a33562c54507a9334e79f0dc4f17d407e6d7c61f0e2f3d0d38599502f617042710fd012de02a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a"
     }]
 
     res = l1.rpc.createonion(hops=hops, assocdata="BB" * 32)
@@ -2866,8 +2879,7 @@ def test_createonion_rpc(node_factory):
                              session_key="41" * 32)
     # The trailer is generated using the filler and can be ued as a
     # checksum. This trailer is from the test-vector in the specs.
-    print(res)
-    assert(res['onion'].endswith('9400f45a48e6dc8ddbaeb3'))
+    assert(res['onion'].endswith('9126aaefb627719f421e20'))
 
 
 @pytest.mark.developer("gossip propagation is slow without DEVELOPER=1")
@@ -3301,19 +3313,19 @@ def test_createonion_limits(node_factory):
     hops = [{
         # privkey: 41bfd2660762506c9933ade59f1debf7e6495b10c14a92dbcd2d623da2507d3d
         "pubkey": "0266e4598d1d3c415f572a8488830b60f7e744ed9235eb0b1ba93283b315c03518",
-        "payload": "00" * 228
+        "payload": bytes([227] + [0] * 227).hex(),
     }, {
         "pubkey": "0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c",
-        "payload": "00" * 228
+        "payload": bytes([227] + [0] * 227).hex(),
     }, {
         "pubkey": "027f31ebc5462c1fdce1b737ecff52d37d75dea43ce11c74d25aa297165faa2007",
-        "payload": "00" * 228
+        "payload": bytes([227] + [0] * 227).hex(),
     }, {
         "pubkey": "032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991",
-        "payload": "00" * 228
+        "payload": bytes([227] + [0] * 227).hex(),
     }, {
         "pubkey": "02edabbd16b41c8371b92ef2f04c1185b4f03b6dcd52ba9b78d9d7c89c8f221145",
-        "payload": "00" * 228
+        "payload": bytes([227] + [0] * 227).hex(),
     }]
 
     # This should success since it's right at the edge
@@ -3321,7 +3333,7 @@ def test_createonion_limits(node_factory):
 
     # This one should fail however
     with pytest.raises(RpcError, match=r'Payloads exceed maximum onion packet size.'):
-        hops[0]['payload'] += '01'
+        hops[0]['payload'] = bytes([228] + [0] * 228).hex()
         l1.rpc.createonion(hops=hops, assocdata="BB" * 32)
 
     # But with a larger onion, it will work!
@@ -3568,34 +3580,57 @@ def test_keysend(node_factory):
         l3.rpc.keysend(l4.info['id'], amt)
 
 
-@unittest.skipIf(not EXPERIMENTAL_FEATURES, "Requires extratlvs option")
-def test_keysend_extra_tlvs(node_factory):
-    """Use the extratlvs option to deliver a message with sphinx' TLV type.
+def test_keysend_strip_tlvs(node_factory):
+    """Use the extratlvs option to deliver a message with sphinx' TLV type, which keysend strips.
     """
     amt = 10000
     l1, l2 = node_factory.line_graph(
         2,
         wait_for_announce=True,
         opts=[
-            {},
             {
-                'experimental-accept-extra-tlv-types': '133773310',
+                # Not needed, just for listconfigs test.
+                'accept-htlc-tlv-types': '133773310,99990',
+            },
+            {
                 "plugin": os.path.join(os.path.dirname(__file__), "plugins/sphinx-receiver.py"),
             },
         ]
     )
 
-    # Send an indirect one from l1 to l3
-    l1.rpc.keysend(l2.info['id'], amt, extratlvs={133773310: 'FEEDC0DE'})
-    invs = l2.rpc.listinvoices()['invoices']
-    assert(len(invs) == 1)
-    assert(l2.daemon.is_in_log(r'plugin-sphinx-receiver.py.*extratlvs.*133773310.*feedc0de'))
+    # Make sure listconfigs works here
+    assert l1.rpc.listconfigs()['accept-htlc-tlv-types'] == '133773310,99990'
 
-    inv = invs[0]
+    l1.rpc.keysend(l2.info['id'], amt, extratlvs={133773310: 'FEEDC0DE'})
+    inv = only_one(l2.rpc.listinvoices()['invoices'])
+    assert not l2.daemon.is_in_log(r'plugin-sphinx-receiver.py.*extratlvs.*133773310.*feedc0de')
+
     assert(inv['amount_received_msat'] >= Millisatoshi(amt))
+    assert inv['description'] == 'keysend'
+    l2.rpc.delinvoice(inv['label'], 'paid')
 
     # Now try again with the TLV type in extra_tlvs as string:
-    l1.rpc.keysend(l2.info['id'], amt, extratlvs={133773310: 'FEEDC0DE'})
+    l1.rpc.keysend(l2.info['id'], amt, extratlvs={133773310: b'hello there'.hex()})
+    inv = only_one(l2.rpc.listinvoices()['invoices'])
+    assert inv['description'] == 'keysend: hello there'
+    l2.daemon.wait_for_log('Keysend payment uses illegal even field 133773310: stripping')
+    l2.rpc.delinvoice(inv['label'], 'paid')
+
+    # We can (just!) fit a giant description in.
+    l1.rpc.keysend(l2.info['id'], amt, extratlvs={133773310: (b'a' * 1100).hex()})
+    inv = only_one(l2.rpc.listinvoices()['invoices'])
+    assert inv['description'] == 'keysend: ' + 'a' * 1100
+    l2.rpc.delinvoice(inv['label'], 'paid')
+    l2.daemon.wait_for_log('Keysend payment uses illegal even field 133773310: stripping')
+
+    # Now try with some special characters
+    ksinfo = """💕 ₿"'
+More info
+"""
+    l1.rpc.keysend(l2.info['id'], amt, extratlvs={133773310: bytes(ksinfo, encoding='utf8').hex()})
+    inv = only_one(l2.rpc.listinvoices()['invoices'])
+    assert inv['description'] == 'keysend: ' + ksinfo
+    l2.daemon.wait_for_log('Keysend payment uses illegal even field 133773310: stripping')
 
 
 def test_keysend_routehint(node_factory):
@@ -3948,6 +3983,7 @@ def test_bolt11_null_after_pay(node_factory, bitcoind):
     assert(pays[0]["bolt11"] == invl1)
     assert('amount_msat' in pays[0] and pays[0]['amount_msat'] == amt)
     assert('created_at' in pays[0])
+    assert('completed_at' in pays[0])
 
 
 def test_mpp_presplit_routehint_conflict(node_factory, bitcoind):
@@ -3986,8 +4022,10 @@ def test_delpay_argument_invalid(node_factory, bitcoind):
     # Create the line graph l2 -> l1 with a channel of 10 ** 5 sat!
     l2, l1 = node_factory.line_graph(2, fundamount=10**5, wait_for_announce=True)
 
+    l2.rpc.check_request_schemas = False
     with pytest.raises(RpcError):
         l2.rpc.delpay()
+    l2.rpc.check_request_schemas = True
 
     # sanity check
     inv = l1.rpc.invoice(10 ** 5, 'inv', 'inv')
@@ -4002,11 +4040,13 @@ def test_delpay_argument_invalid(node_factory, bitcoind):
     payment_hash = inv['payment_hash']
 
     # payment paid with wrong status (pending status is a illegal input)
+    l2.rpc.check_request_schemas = False
     with pytest.raises(RpcError):
         l2.rpc.delpay(payment_hash, 'pending')
 
     with pytest.raises(RpcError):
         l2.rpc.delpay(payment_hash, 'invalid_status')
+    l2.rpc.check_request_schemas = True
 
     with pytest.raises(RpcError):
         l2.rpc.delpay(payment_hash, 'failed')
@@ -4345,7 +4385,7 @@ def test_offer_needs_option(node_factory):
         l1.rpc.call('fetchinvoice', {'offer': 'aaaa'})
 
     # Decode still works though
-    assert l1.rpc.decode('lno1qgsqvgnwgcg35z6ee2h3yczraddm72xrfua9uve2rlrm9deu7xyfzrcgqyys5qq7ypnwgkvdr57yzh6h92zg3qctvrm7w38djg67kzcm4yeg8vc4cq633uzqaxlsxzxergsrav494jjrpuy9hcldjeglha57lxvz20fhha6hjwhv69nnzwzjsajntyf0c4z8h9e70dfdlfq8jdvc9rdht8vr955udtg')['valid']
+    assert l1.rpc.decode('lno1qgsqvgnwgcg35z6ee2h3yczraddm72xrfua9uve2rlrm9deu7xyfzrcgqyys5qq7yypxdeze35wncs2l2u4gfzyrpds00e6yakfrt6ctrw5n9qanzhqr2x8sgp3lqxpxd82j87j67wyff9cd9msgagq8hveftdkx5t3e98gj2x7ac99hhwlpj9yvj79yz3l8gdlmdmhq47ct9pkedfd8naksd8f8gpar')['valid']
 
 
 def test_offer(node_factory, bitcoind):
@@ -4540,20 +4580,6 @@ def test_offer(node_factory, bitcoind):
     assert 'recurrence: every 600 seconds paywindow -10 to +600 (pay proportional)\n' in output
 
 
-def test_deprecated_offer(node_factory, bitcoind):
-    """Test that we allow old invreq name `payer_signature` with deprecated_apis"""
-    l1, l2 = node_factory.line_graph(2, opts={'experimental-offers': None,
-                                              'allow-deprecated-apis': True})
-
-    offer = l2.rpc.call('offer', {'amount': 10000,
-                                  'description': 'test'})['bolt12']
-
-    inv = l1.rpc.call('fetchinvoice', {'offer': offer})['invoice']
-    l2.daemon.wait_for_log("Testing invoice_request with old name 'payer_signature'")
-
-    l1.rpc.pay(inv)
-
-
 @pytest.mark.developer("dev-no-modern-onion is DEVELOPER-only")
 def test_fetchinvoice_3hop(node_factory, bitcoind):
     l1, l2, l3, l4 = node_factory.line_graph(4, wait_for_announce=True,
@@ -4563,27 +4589,6 @@ def test_fetchinvoice_3hop(node_factory, bitcoind):
     offer1 = l4.rpc.call('offer', {'amount': '2msat',
                                    'description': 'simple test'})
     assert offer1['created'] is True
-
-    l1.rpc.call('fetchinvoice', {'offer': offer1['bolt12']})
-
-    # Make sure l4 handled both onions before shutting down
-    l1.daemon.wait_for_log(r'plugin-fetchinvoice: Received modern onion .*obs2\\":false')
-    l1.daemon.wait_for_log(r'plugin-fetchinvoice: No match for modern onion.*obs2\\":true')
-
-    # Test with obsolete onion.
-    l4.stop()
-    l4.daemon.opts['dev-no-modern-onion'] = None
-    l4.start()
-    l4.rpc.connect(l3.info['id'], 'localhost', l3.port)
-
-    l1.rpc.call('fetchinvoice', {'offer': offer1['bolt12']})
-
-    # Test with modern onion.
-    l4.stop()
-    del l4.daemon.opts['dev-no-modern-onion']
-    l4.daemon.opts['dev-no-obsolete-onion'] = None
-    l4.start()
-    l4.rpc.connect(l3.info['id'], 'localhost', l3.port)
 
     l1.rpc.call('fetchinvoice', {'offer': offer1['bolt12']})
 
@@ -4883,10 +4888,8 @@ def test_dev_rawrequest(node_factory):
     assert 'invoice' in ret
 
 
-def do_test_sendinvoice(node_factory, bitcoind, disable):
+def test_sendinvoice(node_factory, bitcoind):
     l2opts = {'experimental-offers': None}
-    if disable:
-        l2opts[disable] = None
     l1, l2 = node_factory.line_graph(2, wait_for_announce=True,
                                      opts=[{'experimental-offers': None},
                                            l2opts])
@@ -4962,20 +4965,6 @@ def do_test_sendinvoice(node_factory, bitcoind, disable):
     assert out['amount_msat'] == Millisatoshi(10000000)
     assert 'pay_index' in out
     assert out['amount_received_msat'] == Millisatoshi(10000000)
-
-
-def test_sendinvoice(node_factory, bitcoind):
-    do_test_sendinvoice(node_factory, bitcoind, None)
-
-
-@pytest.mark.developer("needs to --dev-no-obsolete-onion")
-def test_sendinvoice_modern(node_factory, bitcoind):
-    do_test_sendinvoice(node_factory, bitcoind, 'dev-no-obsolete-onion')
-
-
-@pytest.mark.developer("needs to --dev-no-modern-onion")
-def test_sendinvoice_obsolete(node_factory, bitcoind):
-    do_test_sendinvoice(node_factory, bitcoind, 'dev-no-modern-onion')
 
 
 def test_self_pay(node_factory):
@@ -5219,48 +5208,6 @@ def test_sendpay_grouping(node_factory, bitcoind):
     assert([p['status'] for p in pays] == ['failed', 'failed', 'complete'])
 
 
-def test_legacyonion(node_factory, bitcoind):
-    # We have to replicate the topology we created onion with, exactly.
-    l1, l2, l3 = node_factory.line_graph(3, fundchannel=False)
-    node_factory.join_nodes([l1, l2], wait_for_announce=True)
-
-    # We need this scid to match canned onion (110x1x0), so no change.
-    addr = l2.rpc.newaddr()['bech32']
-    bitcoind.rpc.sendtoaddress(addr, 10**6 / 10**8)
-
-    bitcoind.generate_block(1)
-    sync_blockheight(bitcoind, [l2])
-    l2.rpc.fundchannel(l3.info['id'], "all")['txid']
-    bitcoind.generate_block(6, wait_for_mempool=1)
-
-    # We don't actually need gossip!  But make sure blockheight is correct.
-    sync_blockheight(bitcoind, [l1, l2, l3])
-
-    l3.rpc.invoice(10000, 'test_invoice', 'description', preimage='00' * 32)['bolt11']
-
-    # Here's one I created using an old c-lightning: l2 gets legacy.
-    l1.rpc.call('sendonion',
-                {"onion": "000279f8e85e661936e01c91d49ed42e776a80741047403b9292e2ef66d977bce0adaf4e773d4750cc8e7359a53107413ec2c9956fb7c7ef2ffba6b588880557efb9cdb6cbc2231c517c1ed83c8aa136e2294b82cd2df382b794128792d86f8ac155966ad0bc7610df86bf5c2dfaf685be237a5056db0cabbf09ac6ca9686a8152b3a2157c1b3bb08b29321ef0d8970ef761d29b1e3305ee3b96195911c0486dbfdd48fa747b802ff7aafbcb396f4bdf3bbc2c72aeea9cd621767d883d6206aec82cd744c571157cf367680f5a91106bfd49e1febf7190cba2868b50cdebefcaaace9ec00083d5b32fc2b4f8db0022c59d361296ebf5c47a09dd633da15cf21bc24b6efbcf7202127fda27b704d6c255e4d240bb56dbd7351d0b6299682f4b4f98dee4aa185b757948a7c80053bec14fc91d813e913c79253de25a1b1fa031eccf0abe52db4f4562a797bc5066202284b070ca35f92cae9d0ea22f5a88aaae9e63b775e10f3f54fa0069a03e554e72bb0c3ead07eb3bf0895531b580123c308fd2450a3698328e71756dee32ae90c4872c296183bbfb08bb2bedbbab9a46ebab05674d53d06dcec6879b994fbd8f828fbccd6766c76255553bb4605f7fe3767f1bb6e8e4341a120574d30de715b27fbcdfec4f590877653bec0ad410d243ebd09e1b1e9929bba99dd8c7bff26201970c8ffeb1e2773eb18ec29bc9b13c8f3dcfc77935b5afd788e1e4ca4a31102d645db575211799bf54c42f2152f227796fdafc7ad6708dd18553d7a9c8bd582655230a3920c25286705353b513de4e2ef3dd84335b9236560f503a9198dc2d730a950c01cd6cf0aee5bc5b2c060de23cd8f2dda92dcfaee0c4e29d5efe12ca1139d0c86b6d22ea58bb3076b953577d86969702176010690e9eb3afda4db3c8e2304494c5f43cdf1487ab6daa740d4645c6d9ed796f0b210e18f751249fa87137bbfb8b332e97ad7e6d73130838b94680a0c999a0ec0c90c3807af60c6db7a3ed2a7ddfbe7c7b293870d9bc003512a3b64607661fcc94df7e9f2bfc875b447b8cedc38d8a55566246761e02932e9308e1f26cf9724f5432fe391b88bd4af4f7b9f7599529035791b475b10eb4cf1efb56bfab75fc75a1cb73308120dbd52e635dd0207df882488ee005eedae5cc3245e6ccb49770ace2868f205f76640b38e55b23e23ca94559c200f94b06d498332675a0ee0fe57551d1dd2343934f20daa60b025992350c7d8de192139d786b5db3ec21c7a772571c61a66b3eff2a424464291e183bd382b0560efab3fc3ccf88cb4b9a3695f35590937b611d98856db8bf46d6716672a1f0efa8cd3e4b49bf1dc0cea35dce1465dc36fd94db0592cfee01a90d96766c8b08a6e79d2b3b3f8a133f3a01aad6d8adbf8aee4dba09232424faae516f0498705c1514f570d3e3e6c9f0a9457a6230847bbdce1d6a427538a82e9025ee7f90901bb73c6819fc02cf8d14c0246a44af8efa2a49ba11cf61a09204dd4a1d925b32ac327d525ff189ffa833d0e1c5e6999a9268a2526c4e9a6fdb95ab6b134e30946923af361a5ef543e77621675d25a60a0e0d691088e68112f18be4fa66d10cf68c65f8c4034fab58aaff2d02076078b7d392a3a72268da5124884fabd0880072d080fa6235d2155c4160c7d1d4a5054a1e27be381d1048d47a4e7abb936f170ff1b210f09214ecb645b1c2d5d77f286afcc4f6716b788e223e82501ee544836605e32074e465923858cde71163ad700947c94381611eda017a6632c782a377a2c506d0392a6e1a7f6e5988f7893776bdadf28e4648ef48672190d9de0e94523c208dbdaee274c6d0ce9a27a40afd1cc3e86936c2e2e96565a052a7581a807a4fbc8abdaac9e8f32dc04789b47fd8d5e874112e2308dedff5a76b6e092cb42c1bd9a082",
-                 "first_hop": {
-                     "amount_msat": "10001msat",
-                     "delay": 29,
-                     "id": "022d223620a359a47ff7f7ac447c85c46c923da53389221a0054c11c1e3ca31d59"
-                 },
-                 "payment_hash": "66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925",
-                 "amount_msat": "10000msat",
-                 "shared_secrets": [
-                     "bd29a24ea1fa5cab1677b22f4980f6aa115d470c2e3052cb08ca7d636441bfd5",
-                     "7d70d337a6b898373386d7d2cff05ca8f4d81123f63cf911aa064a6d8849f972"
-                 ],
-                 "partid": 1,
-                 "groupid": 1,
-                 "bolt11": "lnbcrt100n1p3y8xl3pp5ve584t0cv27hwmy0cx9ca8uwyqyfw9y9dm3r8vus9fv36r2l9yjsdqjv3jhxcmjd9c8g6t0dcxqyjw5qcqp9sp5q8g040f9rl9mu2unkjuj0vn262s6nyrhz5hythk3ueu2lfzahmzsrzjqgkjyd3q5dv6gllh77kygly9c3kfy0d9xwyjyxsq2nq3c83u5vw4jqqqdcqqqqgqqqqqqqqpqqqqqzsqqc9qgsqqqyssq47lyzhlmfw6hdcrklz3nw774p6nueggm6sxvrg734yrzdl0rn4p8rfl4ql2hexcufafgpstjkag2ywfycg08kuz5k5qszz7ecypqeugpnapu7t",
-                 "destination": "035d2b1192dfba134e10e540875d366ebc8bc353d5aa766b80c090b39c3a5d885d"})
-
-    wait_for(lambda: only_one(l3.rpc.listinvoices()['invoices'])['status'] == 'paid')
-    assert only_one(l2.rpc.listforwards()['forwards'])['style'] == 'legacy'
-
-
 def test_pay_manual_exclude(node_factory, bitcoind):
     l1, l2, l3 = node_factory.line_graph(3, wait_for_announce=True)
     l1_id = l1.rpc.getinfo()['id']
@@ -5373,3 +5320,23 @@ def test_sendpay_dual_amounts(node_factory):
 
     with pytest.raises(RpcError, match=r'No connection to first peer found'):
         l1.rpc.sendpay(route=route, payment_hash="00" * 32)
+
+
+@unittest.skipIf(TEST_NETWORK != 'regtest', "Invoice is network specific")
+@pytest.mark.developer("needs createinvoicerequest which allows unsigned invoice containing payerinfo")
+@pytest.mark.slow_test
+def test_payerkey(node_factory):
+    """payerkey calculation should not change across releases!"""
+    nodes = node_factory.get_nodes(7)
+
+    expected_keys = ["02294ec1cd3f100947fe859d71a42cb87932e36e7771abf2d50b02a7a92be8e4d5",
+                     "026a4a3b6b0c694da6f14629ca5140713fc703591a6d8aae5c79ba9b5556fc5723",
+                     "03defd2b1f3004b0145351f469f34512c6fa4d02fe891a977bafdb34fe7b73ea48",
+                     "03eccb00c0a3c760465bb69a6297d7cfa5bcbd989d5a88e435bd8d6e4c723013cd",
+                     "021b4bfa652f0df7498d734b0ca888b4e3b07f59e1a974ec7d4a9d6046e8e5ab92",
+                     "03fc91d60b061e517f9182e3e40ea14c27df520c51db204f1409ff50e5cf9a5e4d",
+                     "03a3bbda0137722ba62207b9d3e5e6cc2a11e58480f801892093e01383aacb7fb2"]
+
+    for n, k in zip(nodes, expected_keys):
+        b12 = n.rpc.createinvoicerequest('lnr1qvsqvgnwgcg35z6ee2h3yczraddm72xrfua9uve2rlrm9deu7xyfzrcyyrjjthf4rh99n7equvlrzrlalcacxj4y9hgzxc79yrntrth6mp3nkvssy5mac4pkfq2m3gq4ttajwh097s')['bolt12']
+        assert n.rpc.decode(b12)['payer_key'] == k

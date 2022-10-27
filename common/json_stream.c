@@ -377,10 +377,10 @@ void json_add_tok(struct json_stream *result, const char *fieldname,
 	memcpy(space, json_tok_full(buffer, tok), json_tok_full_len(tok));
 }
 
-void json_add_errcode(struct json_stream *result, const char *fieldname,
-		      errcode_t code)
+void json_add_jsonrpc_errcode(struct json_stream *result, const char *fieldname,
+			      enum jsonrpc_errcode code)
 {
-	json_add_primitive_fmt(result, fieldname, "%" PRIerrcode, code);
+	json_add_primitive_fmt(result, fieldname, "%i", code);
 }
 
 void json_add_invstring(struct json_stream *result, const char *invstring)
@@ -413,16 +413,6 @@ void json_add_pubkey(struct json_stream *response,
 
 	pubkey_to_der(der, key);
 	json_add_hex(response, fieldname, der, sizeof(der));
-}
-
-void json_add_point32(struct json_stream *response,
-		      const char *fieldname,
-		      const struct point32 *key)
-{
-	u8 output[32];
-
-	secp256k1_xonly_pubkey_serialize(secp256k1_ctx, output, &key->pubkey);
-	json_add_hex(response, fieldname, output, sizeof(output));
 }
 
 void json_add_bip340sig(struct json_stream *response,

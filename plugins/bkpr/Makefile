@@ -37,7 +37,7 @@ PLUGIN_ALL_HEADER += $(BOOKKEEPER_HEADER)
 C_PLUGINS += plugins/bookkeeper
 PLUGINS += plugins/bookkeeper
 
-plugins/bookkeeper: common/bolt12.o common/bolt12_merkle.o $(BOOKKEEPER_OBJS) $(PLUGIN_LIB_OBJS) $(JSMN_OBJTS) $(PLUGIN_COMMON_OBJS) $(WIRE_OBJS) $(DB_OBJS)
+plugins/bookkeeper: common/bolt12.o common/bolt12_merkle.o $(BOOKKEEPER_OBJS) $(PLUGIN_LIB_OBJS) $(JSMN_OBJTS) $(PLUGIN_COMMON_OBJS) $(WIRE_OBJS) $(WIRE_BOLT12_OBJS) $(DB_OBJS)
 
 # The following files contain SQL-annotated statements that we need to extact
 BOOKKEEPER_SQL_FILES := 			\
@@ -47,8 +47,8 @@ BOOKKEEPER_SQL_FILES := 			\
 	plugins/bkpr/recorder.c
 
 plugins/bkpr/statements_gettextgen.po: $(BOOKKEEPER_SQL_FILES) $(FORCE)
-	@if $(call SHA256STAMP_CHANGED_ALL); then \
-		$(call VERBOSE,"xgettext $@",xgettext -kNAMED_SQL -kSQL --add-location --no-wrap --omit-header -o $@ $(BOOKKEEPER_SQL_FILES) && $(call SHA256STAMP_ALL,# ,)); \
+	@if $(call SHA256STAMP_CHANGED); then \
+		$(call VERBOSE,"xgettext $@",xgettext -kNAMED_SQL -kSQL --add-location --no-wrap --omit-header -o $@ $(BOOKKEEPER_SQL_FILES) && $(call SHA256STAMP,# ,)); \
 	fi
 
 plugins/bkpr/db_%_sqlgen.c: plugins/bkpr/statements_gettextgen.po devtools/sql-rewrite.py $(BOOKKEEPER_SQL_FILES) $(FORCE)

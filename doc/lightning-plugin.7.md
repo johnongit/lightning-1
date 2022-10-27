@@ -50,15 +50,18 @@ RETURN VALUE
 
 [comment]: # (GENERATE-FROM-SCHEMA-START)
 On success, an object is returned, containing:
+
 - **command** (string): the subcommand this is responding to (one of "start", "stop", "rescan", "startdir", "list")
 
 If **command** is "start", "startdir", "rescan" or "list":
+
   - **plugins** (array of objects):
     - **name** (string): full pathname of the plugin
     - **active** (boolean): status; plugin completed init and is operational, plugins are configured asynchronously.
     - **dynamic** (boolean): plugin can be stopped or started without restarting lightningd
 
 If **command** is "stop":
+
   - **result** (string): A message saying it successfully stopped
 
 [comment]: # (GENERATE-FROM-SCHEMA-END)
@@ -81,4 +84,4 @@ RESOURCES
 Main web site: <https://github.com/ElementsProject/lightning>
 
 [writing plugins]: PLUGINS.md
-[comment]: # ( SHA256STAMP:4ed30fb62c37111ea06b55d1252727c9c56fabd40e9e1f50083c99de74b8dfa1)
+[comment]: # ( SHA256STAMP:3d7e6647d7fb3eab2a8c6361bb0cbe60efbd822f30f31e08cce68e2aa41ba532)

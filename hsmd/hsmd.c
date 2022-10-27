@@ -443,6 +443,8 @@ static struct io_plan *init_hsm(struct io_conn *conn,
 	struct sha256 *shaseed;
 	struct secret *hsm_encryption_key;
 	struct bip32_key_version bip32_key_version;
+	u32 minversion, maxversion;
+	const u32 our_minversion = 2, our_maxversion = 2;
 
 	/* This must be lightningd. */
 	assert(is_lightningd(c));
@@ -452,8 +454,18 @@ static struct io_plan *init_hsm(struct io_conn *conn,
 	 * an extension of the simple comma-separated format output by the
 	 * BOLT tools/extract-formats.py tool. */
 	if (!fromwire_hsmd_init(NULL, msg_in, &bip32_key_version, &chainparams,
-	                       &hsm_encryption_key, &privkey, &seed, &secrets, &shaseed))
+				&hsm_encryption_key, &privkey, &seed, &secrets, &shaseed,
+				&minversion, &maxversion))
 		return bad_req(conn, c, msg_in);
+
+	/*~ Usually we don't worry about API breakage between internal daemons,
+	 * but there are other implementations of the HSM daemon now, so we
+	 * do at least the simplest, clearest thing. */
+	if (our_minversion > maxversion || our_maxversion < minversion)
+		return bad_req_fmt(conn, c, msg_in,
+				   "Version %u-%u not valid: we need %u-%u",
+				   minversion, maxversion,
+				   our_minversion, our_maxversion);
 
 	/*~ The memory is actually copied in towire(), so lock the `hsm_secret`
 	 * encryption key (new) memory again here. */
@@ -555,17 +567,16 @@ static struct io_plan *handle_memleak(struct io_conn *conn,
 	bool found_leak;
 	u8 *reply;
 
-	memtable = memleak_find_allocations(tmpctx, msg_in, msg_in);
+	memtable = memleak_start(tmpctx);
+	memleak_ptr(memtable, msg_in);
 
-	/* Now delete clients and anything they point to. */
-	memleak_remove_region(memtable,
-			      dbid_zero_clients, sizeof(dbid_zero_clients));
-	memleak_remove_uintmap(memtable, &clients);
-	memleak_remove_region(memtable,
-			      status_conn, tal_bytelen(status_conn));
+	/* Now note clients and anything they point to. */
+	memleak_scan_region(memtable, dbid_zero_clients, sizeof(dbid_zero_clients));
+	memleak_scan_uintmap(memtable, &clients);
+	memleak_scan_obj(memtable, status_conn);
 
-	memleak_remove_pointer(memtable, dev_force_privkey);
-	memleak_remove_pointer(memtable, dev_force_bip32_seed);
+	memleak_ptr(memtable, dev_force_privkey);
+	memleak_ptr(memtable, dev_force_bip32_seed);
 
 	found_leak = dump_memleak(memtable, memleak_status_broken);
 	reply = towire_hsmd_dev_memleak_reply(NULL, found_leak);
@@ -681,7 +692,8 @@ static struct io_plan *handle_client(struct io_conn *conn, struct client *c)
 	case WIRE_HSMD_NODE_ANNOUNCEMENT_SIG_REPLY:
 	case WIRE_HSMD_SIGN_WITHDRAWAL_REPLY:
 	case WIRE_HSMD_SIGN_INVOICE_REPLY:
-	case WIRE_HSMD_INIT_REPLY:
+	case WIRE_HSMD_INIT_REPLY_V1:
+	case WIRE_HSMD_INIT_REPLY_V2:
 	case WIRE_HSMD_DERIVE_SECRET_REPLY:
 	case WIRE_HSMSTATUS_CLIENT_BAD_REQUEST:
 	case WIRE_HSMD_SIGN_COMMITMENT_TX_REPLY:

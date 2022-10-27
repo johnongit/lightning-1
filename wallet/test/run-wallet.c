@@ -52,9 +52,9 @@ size_t bigsize_put(u8 buf[BIGSIZE_MAX_LEN] UNNEEDED, bigsize_t v UNNEEDED)
 /* Generated stub for bitcoind_getutxout_ */
 void bitcoind_getutxout_(struct bitcoind *bitcoind UNNEEDED,
 			 const struct bitcoin_outpoint *outpoint UNNEEDED,
-			 void (*cb)(struct bitcoind *bitcoind UNNEEDED,
-				    const struct bitcoin_tx_output *txout UNNEEDED,
-				    void *arg) UNNEEDED,
+			 void (*cb)(struct bitcoind * UNNEEDED,
+				    const struct bitcoin_tx_output * UNNEEDED,
+				    void *) UNNEEDED,
 			 void *arg UNNEEDED)
 { fprintf(stderr, "bitcoind_getutxout_ called!\n"); abort(); }
 /* Generated stub for blinding_hash_e_and_ss */
@@ -70,7 +70,8 @@ bool blinding_next_pubkey(const struct pubkey *pk UNNEEDED,
 /* Generated stub for broadcast_tx */
 void broadcast_tx(struct chain_topology *topo UNNEEDED,
 		  struct channel *channel UNNEEDED, const struct bitcoin_tx *tx UNNEEDED,
-		  void (*failed)(struct channel *channel UNNEEDED,
+		  const char *cmd_id UNNEEDED, bool allowhighfees UNNEEDED,
+		  void (*failed)(struct channel * UNNEEDED,
 				 bool success UNNEEDED,
 				 const char *err))
 { fprintf(stderr, "broadcast_tx called!\n"); abort(); }
@@ -89,7 +90,7 @@ void channel_update_reserve(struct channel *channel UNNEEDED,
 			    struct amount_sat funding_total UNNEEDED)
 { fprintf(stderr, "channel_update_reserve called!\n"); abort(); }
 /* Generated stub for command_fail */
-struct command_result *command_fail(struct command *cmd UNNEEDED, errcode_t code UNNEEDED,
+struct command_result *command_fail(struct command *cmd UNNEEDED, enum jsonrpc_errcode code UNNEEDED,
 				    const char *fmt UNNEEDED, ...)
 
 { fprintf(stderr, "command_fail called!\n"); abort(); }
@@ -106,6 +107,10 @@ struct command_result *command_success(struct command *cmd UNNEEDED,
 				       struct json_stream *response)
 
 { fprintf(stderr, "command_success called!\n"); abort(); }
+/* Generated stub for connect_any_cmd_id */
+const char *connect_any_cmd_id(const tal_t *ctx UNNEEDED,
+			       struct lightningd *ld UNNEEDED, const struct peer *peer UNNEEDED)
+{ fprintf(stderr, "connect_any_cmd_id called!\n"); abort(); }
 /* Generated stub for connect_failed_disconnect */
 void connect_failed_disconnect(struct lightningd *ld UNNEEDED,
 			       const struct node_id *id UNNEEDED,
@@ -421,6 +426,10 @@ char *json_strdup(const tal_t *ctx UNNEEDED, const char *buffer UNNEEDED, const 
 /* Generated stub for json_stream_success */
 struct json_stream *json_stream_success(struct command *cmd UNNEEDED)
 { fprintf(stderr, "json_stream_success called!\n"); abort(); }
+/* Generated stub for json_to_channel_id */
+bool json_to_channel_id(const char *buffer UNNEEDED, const jsmntok_t *tok UNNEEDED,
+			struct channel_id *cid UNNEEDED)
+{ fprintf(stderr, "json_to_channel_id called!\n"); abort(); }
 /* Generated stub for json_to_node_id */
 bool json_to_node_id(const char *buffer UNNEEDED, const jsmntok_t *tok UNNEEDED,
 			       struct node_id *id UNNEEDED)
@@ -539,10 +548,12 @@ enum watch_result onchaind_funding_spent(struct channel *channel UNNEEDED,
 { fprintf(stderr, "onchaind_funding_spent called!\n"); abort(); }
 /* Generated stub for onion_decode */
 struct onion_payload *onion_decode(const tal_t *ctx UNNEEDED,
+				   bool blinding_support UNNEEDED,
 				   const struct route_step *rs UNNEEDED,
 				   const struct pubkey *blinding UNNEEDED,
-				   const struct secret *blinding_ss UNNEEDED,
 				   const u64 *accepted_extra_tlvs UNNEEDED,
+				   struct amount_msat amount_in UNNEEDED,
+				   u32 cltv_expiry UNNEEDED,
 				   u64 *failtlvtype UNNEEDED,
 				   size_t *failtlvpos UNNEEDED)
 { fprintf(stderr, "onion_decode called!\n"); abort(); }
@@ -611,11 +622,11 @@ struct command_result *param_short_channel_id(struct command *cmd UNNEEDED,
 					      const jsmntok_t *tok UNNEEDED,
 					      struct short_channel_id **scid UNNEEDED)
 { fprintf(stderr, "param_short_channel_id called!\n"); abort(); }
-/* Generated stub for param_string */
-struct command_result *param_string(struct command *cmd UNNEEDED, const char *name UNNEEDED,
-				    const char * buffer UNNEEDED, const jsmntok_t *tok UNNEEDED,
-				    const char **str UNNEEDED)
-{ fprintf(stderr, "param_string called!\n"); abort(); }
+/* Generated stub for param_u64 */
+struct command_result *param_u64(struct command *cmd UNNEEDED, const char *name UNNEEDED,
+				 const char *buffer UNNEEDED, const jsmntok_t *tok UNNEEDED,
+				 uint64_t **num UNNEEDED)
+{ fprintf(stderr, "param_u64 called!\n"); abort(); }
 /* Generated stub for parse_onionpacket */
 struct onionpacket *parse_onionpacket(const tal_t *ctx UNNEEDED,
 				      const u8 *src UNNEEDED,
@@ -657,7 +668,9 @@ bool peer_start_openingd(struct peer *peer UNNEEDED,
 const char *peer_wire_name(int e UNNEEDED)
 { fprintf(stderr, "peer_wire_name called!\n"); abort(); }
 /* Generated stub for plugin_hook_call_ */
-bool plugin_hook_call_(struct lightningd *ld UNNEEDED, const struct plugin_hook *hook UNNEEDED,
+bool plugin_hook_call_(struct lightningd *ld UNNEEDED,
+		       const struct plugin_hook *hook UNNEEDED,
+		       const char *cmd_id TAKES UNNEEDED,
 		       tal_t *cb_arg STEALS UNNEEDED)
 { fprintf(stderr, "plugin_hook_call_ called!\n"); abort(); }
 /* Generated stub for process_onionpacket */
@@ -674,8 +687,9 @@ struct route_step *process_onionpacket(
 void report_subd_memleak(struct leak_detect *leak_detect UNNEEDED, struct subd *leaker UNNEEDED)
 { fprintf(stderr, "report_subd_memleak called!\n"); abort(); }
 /* Generated stub for resolve_close_command */
-void resolve_close_command(struct lightningd *ld UNNEEDED, struct channel *channel UNNEEDED,
-			   bool cooperative UNNEEDED)
+const char *resolve_close_command(const tal_t *ctx UNNEEDED,
+				  struct lightningd *ld UNNEEDED, struct channel *channel UNNEEDED,
+				  bool cooperative UNNEEDED)
 { fprintf(stderr, "resolve_close_command called!\n"); abort(); }
 /* Generated stub for serialize_onionpacket */
 u8 *serialize_onionpacket(
@@ -711,8 +725,8 @@ void subkey_from_hmac(const char *prefix UNNEEDED,
 /* Generated stub for topology_add_sync_waiter_ */
 void topology_add_sync_waiter_(const tal_t *ctx UNNEEDED,
 			       struct chain_topology *topo UNNEEDED,
-			       void (*cb)(struct chain_topology *topo UNNEEDED,
-					  void *arg) UNNEEDED,
+			       void (*cb)(struct chain_topology * UNNEEDED,
+					  void *) UNNEEDED,
 			       void *arg UNNEEDED)
 { fprintf(stderr, "topology_add_sync_waiter_ called!\n"); abort(); }
 /* Generated stub for towire_channeld_config_channel */
@@ -774,9 +788,9 @@ u8 *towire_final_incorrect_cltv_expiry(const tal_t *ctx UNNEEDED, u32 cltv_expir
 /* Generated stub for towire_final_incorrect_htlc_amount */
 u8 *towire_final_incorrect_htlc_amount(const tal_t *ctx UNNEEDED, struct amount_msat incoming_htlc_amt UNNEEDED)
 { fprintf(stderr, "towire_final_incorrect_htlc_amount called!\n"); abort(); }
-/* Generated stub for towire_gossipd_remote_addr */
-u8 *towire_gossipd_remote_addr(const tal_t *ctx UNNEEDED, const struct wireaddr *remote_addr UNNEEDED)
-{ fprintf(stderr, "towire_gossipd_remote_addr called!\n"); abort(); }
+/* Generated stub for towire_gossipd_discovered_ip */
+u8 *towire_gossipd_discovered_ip(const tal_t *ctx UNNEEDED, const struct wireaddr *discovered_ip UNNEEDED)
+{ fprintf(stderr, "towire_gossipd_discovered_ip called!\n"); abort(); }
 /* Generated stub for towire_hsmd_get_output_scriptpubkey */
 u8 *towire_hsmd_get_output_scriptpubkey(const tal_t *ctx UNNEEDED, u64 channel_id UNNEEDED, const struct node_id *peer_id UNNEEDED, const struct pubkey *commitment_point UNNEEDED)
 { fprintf(stderr, "towire_hsmd_get_output_scriptpubkey called!\n"); abort(); }
@@ -847,7 +861,7 @@ struct txwatch *watch_txid(const tal_t *ctx UNNEEDED,
 			   struct channel *channel UNNEEDED,
 			   const struct bitcoin_txid *txid UNNEEDED,
 			   enum watch_result (*cb)(struct lightningd *ld UNNEEDED,
-						   struct channel *channel UNNEEDED,
+						   struct channel * UNNEEDED,
 						   const struct bitcoin_txid * UNNEEDED,
 						   const struct bitcoin_tx * UNNEEDED,
 						   unsigned int depth))
@@ -857,7 +871,7 @@ struct txowatch *watch_txo(const tal_t *ctx UNNEEDED,
 			   struct chain_topology *topo UNNEEDED,
 			   struct channel *channel UNNEEDED,
 			   const struct bitcoin_outpoint *outpoint UNNEEDED,
-			   enum watch_result (*cb)(struct channel *channel UNNEEDED,
+			   enum watch_result (*cb)(struct channel * UNNEEDED,
 						   const struct bitcoin_tx *tx UNNEEDED,
 						   size_t input_num UNNEEDED,
 						   const struct block *block))
@@ -974,9 +988,9 @@ static struct wallet *create_test_wallet(struct lightningd *ld, const tal_t *ctx
 				  w->bip32_base) == WALLY_OK);
 
 	CHECK_MSG(w->db, "Failed opening the db");
+	w->db->data_version = 0;
 	db_begin_transaction(w->db);
 	db_migrate(ld, w->db, bip32_base);
-	w->db->data_version = 0;
 	db_commit_transaction(w->db);
 	CHECK_MSG(!wallet_err, wallet_err);
 	w->max_channel_dbid = 0;
@@ -1098,7 +1112,7 @@ static bool test_wallet_outputs(struct lightningd *ld, const tal_t *ctx)
 
 	/* Add another utxo that's CSV-locked for 5 blocks */
 	parse_wireaddr_internal("localhost:1234", &addr, 0, false, false, false,
-				true, NULL);
+				NULL);
 	channel.peer = new_peer(ld, 0, &id, &addr, false);
 	channel.dbid = 1;
 	channel.type = channel_type_anchor_outputs(tmpctx);
@@ -1395,7 +1409,7 @@ static bool test_channel_crud(struct lightningd *ld, const tal_t *ctx)
 	mempat(scriptpubkey, tal_count(scriptpubkey));
 	c1.first_blocknum = 1;
 	parse_wireaddr_internal("localhost:1234", &addr, 0, false, false, false,
-				true, NULL);
+				NULL);
 	c1.final_key_idx = 1337;
 	p = new_peer(ld, 0, &id, &addr, false);
 	c1.peer = p;
@@ -1558,7 +1572,7 @@ static bool test_channel_inflight_crud(struct lightningd *ld, const tal_t *ctx)
 	pubkey_from_der(tal_hexdata(w, "02a1633cafcc01ebfb6d78e39f687a1f0995c62fc95f51ead10a02ee0be551b5dc", 66), 33, &pk);
 	node_id_from_pubkey(&id, &pk);
 	parse_wireaddr_internal("localhost:1234", &addr, 0, false, false, false,
-				true, NULL);
+				NULL);
 
 	/* new channel! */
 	p = new_peer(ld, 0, &id, &addr, false);

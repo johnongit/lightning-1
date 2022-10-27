@@ -30,6 +30,7 @@ RETURN VALUE
 
 [comment]: # (GENERATE-FROM-SCHEMA-START)
 On success, an object is returned, containing:
+
 - **help** (array of objects):
   - **command** (string): the command
   - **category** (string): the category for this command (useful for grouping)
@@ -67,4 +68,4 @@ RESOURCES
 ---------
 
 Main web site: <https://github.com/ElementsProject/lightning>
-[comment]: # ( SHA256STAMP:881f00fb7943bc1655c054488643a4da37742b6705924f0ba33366e8cf3f2b93)
+[comment]: # ( SHA256STAMP:48f9ef4d1d73aa13ebd1ffa37107111c35c1a197bbcf00f52c5149847ca57ac1)

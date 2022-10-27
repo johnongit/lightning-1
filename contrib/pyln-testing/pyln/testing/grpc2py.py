@@ -59,6 +59,7 @@ def getinfo2py(m):
         "lightning_dir": m.lightning_dir,  # PrimitiveField in generate_composite
         "blockheight": m.blockheight,  # PrimitiveField in generate_composite
         "network": m.network,  # PrimitiveField in generate_composite
+        "msatoshi_fees_collected": m.msatoshi_fees_collected,  # PrimitiveField in generate_composite
         "fees_collected_msat": amount2msat(m.fees_collected_msat),  # PrimitiveField in generate_composite
         "address": [getinfo_address2py(i) for i in m.address],  # ArrayField[composite] in generate_composite
         "binding": [getinfo_binding2py(i) for i in m.binding],  # ArrayField[composite] in generate_composite
@@ -241,6 +242,7 @@ def sendpay2py(m):
         "amount_msat": amount2msat(m.amount_msat),  # PrimitiveField in generate_composite
         "destination": hexlify(m.destination),  # PrimitiveField in generate_composite
         "created_at": m.created_at,  # PrimitiveField in generate_composite
+        "completed_at": m.completed_at,  # PrimitiveField in generate_composite
         "amount_sent_msat": amount2msat(m.amount_sent_msat),  # PrimitiveField in generate_composite
         "label": m.label,  # PrimitiveField in generate_composite
         "partid": m.partid,  # PrimitiveField in generate_composite
@@ -606,6 +608,7 @@ def waitsendpay2py(m):
         "amount_msat": amount2msat(m.amount_msat),  # PrimitiveField in generate_composite
         "destination": hexlify(m.destination),  # PrimitiveField in generate_composite
         "created_at": m.created_at,  # PrimitiveField in generate_composite
+        "completed_at": m.completed_at,  # PrimitiveField in generate_composite
         "amount_sent_msat": amount2msat(m.amount_sent_msat),  # PrimitiveField in generate_composite
         "label": m.label,  # PrimitiveField in generate_composite
         "partid": m.partid,  # PrimitiveField in generate_composite
@@ -785,6 +788,7 @@ def getroute_route2py(m):
         "id": hexlify(m.id),  # PrimitiveField in generate_composite
         "channel": m.channel,  # PrimitiveField in generate_composite
         "direction": m.direction,  # PrimitiveField in generate_composite
+        "msatoshi": m.msatoshi,  # PrimitiveField in generate_composite
         "amount_msat": amount2msat(m.amount_msat),  # PrimitiveField in generate_composite
         "delay": m.delay,  # PrimitiveField in generate_composite
         "style": str(m.style),  # EnumField in generate_composite
@@ -800,11 +804,12 @@ def getroute2py(m):
 def listforwards_forwards2py(m):
     return remove_default({
         "in_channel": m.in_channel,  # PrimitiveField in generate_composite
+        "in_htlc_id": m.in_htlc_id,  # PrimitiveField in generate_composite
         "in_msat": amount2msat(m.in_msat),  # PrimitiveField in generate_composite
         "status": str(m.status),  # EnumField in generate_composite
         "received_time": m.received_time,  # PrimitiveField in generate_composite
         "out_channel": m.out_channel,  # PrimitiveField in generate_composite
-        "payment_hash": hexlify(m.payment_hash),  # PrimitiveField in generate_composite
+        "out_htlc_id": m.out_htlc_id,  # PrimitiveField in generate_composite
         "style": str(m.style),  # EnumField in generate_composite
         "fee_msat": amount2msat(m.fee_msat),  # PrimitiveField in generate_composite
         "out_msat": amount2msat(m.out_msat),  # PrimitiveField in generate_composite
@@ -823,12 +828,13 @@ def listpays_pays2py(m):
         "status": str(m.status),  # EnumField in generate_composite
         "destination": hexlify(m.destination),  # PrimitiveField in generate_composite
         "created_at": m.created_at,  # PrimitiveField in generate_composite
+        "completed_at": m.completed_at,  # PrimitiveField in generate_composite
         "label": m.label,  # PrimitiveField in generate_composite
         "bolt11": m.bolt11,  # PrimitiveField in generate_composite
         "description": m.description,  # PrimitiveField in generate_composite
         "bolt12": m.bolt12,  # PrimitiveField in generate_composite
-        "amount_msat": amount2msat(m.amount_msat),  # PrimitiveField in generate_composite
-        "amount_sent_msat": amount2msat(m.amount_sent_msat),  # PrimitiveField in generate_composite
+        "preimage": hexlify(m.preimage),  # PrimitiveField in generate_composite
+        "number_of_parts": m.number_of_parts,  # PrimitiveField in generate_composite
         "erroronion": hexlify(m.erroronion),  # PrimitiveField in generate_composite
     })
 
@@ -842,6 +848,26 @@ def listpays2py(m):
 def ping2py(m):
     return remove_default({
         "totlen": m.totlen,  # PrimitiveField in generate_composite
+    })
+
+
+def setchannel_channels2py(m):
+    return remove_default({
+        "peer_id": hexlify(m.peer_id),  # PrimitiveField in generate_composite
+        "channel_id": hexlify(m.channel_id),  # PrimitiveField in generate_composite
+        "short_channel_id": m.short_channel_id,  # PrimitiveField in generate_composite
+        "fee_base_msat": amount2msat(m.fee_base_msat),  # PrimitiveField in generate_composite
+        "fee_proportional_millionths": m.fee_proportional_millionths,  # PrimitiveField in generate_composite
+        "minimum_htlc_out_msat": amount2msat(m.minimum_htlc_out_msat),  # PrimitiveField in generate_composite
+        "warning_htlcmin_too_low": m.warning_htlcmin_too_low,  # PrimitiveField in generate_composite
+        "maximum_htlc_out_msat": amount2msat(m.maximum_htlc_out_msat),  # PrimitiveField in generate_composite
+        "warning_htlcmax_too_high": m.warning_htlcmax_too_high,  # PrimitiveField in generate_composite
+    })
+
+
+def setchannel2py(m):
+    return remove_default({
+        "channels": [setchannel_channels2py(i) for i in m.channels],  # ArrayField[composite] in generate_composite
     })
 
 

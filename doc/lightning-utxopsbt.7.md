@@ -45,17 +45,18 @@ RETURN VALUE
 
 [comment]: # (GENERATE-FROM-SCHEMA-START)
 On success, an object is returned, containing:
+
 - **psbt** (string): Unsigned PSBT which fulfills the parameters given
-- **feerate_per_kw** (u32): The feerate used to create the PSBT, in satoshis-per-kiloweight
-- **estimated_final_weight** (u32): The estimated weight of the transaction once fully signed
-- **excess_msat** (msat): The amount above *satoshi* which is available.  This could be zero, or dust; it will be zero if *change_outnum* is also returned
-- **change_outnum** (u32, optional): The 0-based output number where change was placed (only if parameter *excess_as_change* was true and there was sufficient funds)
+- **feerate\_per\_kw** (u32): The feerate used to create the PSBT, in satoshis-per-kiloweight
+- **estimated\_final\_weight** (u32): The estimated weight of the transaction once fully signed
+- **excess\_msat** (msat): The amount above *satoshi* which is available.  This could be zero, or dust; it will be zero if *change_outnum* is also returned
+- **change\_outnum** (u32, optional): The 0-based output number where change was placed (only if parameter *excess_as_change* was true and there was sufficient funds)
 - **reservations** (array of objects, optional): If *reserve* was true or a non-zero number, just as per lightning-reserveinputs(7):
   - **txid** (txid): The txid of the transaction
   - **vout** (u32): The 0-based output number
-  - **was_reserved** (boolean): Whether this output was previously reserved
+  - **was\_reserved** (boolean): Whether this output was previously reserved
   - **reserved** (boolean): Whether this output is now reserved (always *true*)
-  - **reserved_to_block** (u32): The blockheight the reservation will expire
+  - **reserved\_to\_block** (u32): The blockheight the reservation will expire
 
 [comment]: # (GENERATE-FROM-SCHEMA-END)
 
@@ -99,4 +100,4 @@ RESOURCES
 
 Main web site: <https://github.com/ElementsProject/lightning>
 
-[comment]: # ( SHA256STAMP:5037d26b92d3481a9eac98f509ac2dcee3f3185d6783f3a549d06a9e2e5e1a5f)
+[comment]: # ( SHA256STAMP:c2c513b40099c9cd2ef7bda1c430fdff055499b67ef2ff9edf7772ea4d87fb2d)

@@ -26,17 +26,18 @@ RETURN VALUE
 ------------
 
 [comment]: # (GENERATE-FROM-SCHEMA-START)
-On success, an object containing **income_events** is returned.  It is an array of objects, where each object contains:
+On success, an object containing **income\_events** is returned.  It is an array of objects, where each object contains:
+
 - **account** (string): The account name. If the account is a channel, the channel_id
 - **tag** (string): Type of income event
-- **credit_msat** (msat): Amount earned (income)
-- **debit_msat** (msat): Amount spent (expenses)
+- **credit\_msat** (msat): Amount earned (income)
+- **debit\_msat** (msat): Amount spent (expenses)
 - **currency** (string): human-readable bech32 part for this coin type
 - **timestamp** (u32): Timestamp this event was recorded by the node. For consolidated events such as onchain_fees, the most recent timestamp
 - **description** (string, optional): More information about this event. If a `invoice` type, typically the bolt11/bolt12 description
 - **outpoint** (string, optional): The txid:outnum for this event, if applicable
 - **txid** (txid, optional): The txid of the transaction that created this event, if applicable
-- **payment_id** (hex, optional): lightning payment identifier. For an htlc, this will be the preimage.
+- **payment\_id** (hex, optional): lightning payment identifier. For an htlc, this will be the preimage.
 
 [comment]: # (GENERATE-FROM-SCHEMA-END)
 
@@ -56,4 +57,4 @@ RESOURCES
 
 Main web site: <https://github.com/ElementsProject/lightning>
 
-[comment]: # ( SHA256STAMP:ab8508af0f40587c5a804f6981591564fe2d18b4fe3fbe7793e6a489607f7e0a)
+[comment]: # ( SHA256STAMP:24a4784f87f26283e8849e525d51b376d3e69ae20c0941cfd745a7d07af8032a)

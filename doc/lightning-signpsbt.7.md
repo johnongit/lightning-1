@@ -40,7 +40,8 @@ RETURN VALUE
 
 [comment]: # (GENERATE-FROM-SCHEMA-START)
 On success, an object is returned, containing:
-- **signed_psbt** (string): The fully signed PSBT
+
+- **signed\_psbt** (string): The fully signed PSBT
 
 [comment]: # (GENERATE-FROM-SCHEMA-END)
 
@@ -71,4 +72,4 @@ RESOURCES
 ---------
 
 Main web site: <https://github.com/ElementsProject/lightning>
-[comment]: # ( SHA256STAMP:a64f3742f0c66ddf203afa3f69859d4385c4156fe99c30f0931e41ce95d944b1)
+[comment]: # ( SHA256STAMP:0daef100b12490126849fcb93a9e861554807d1a5acf68bc17de92a30505e18a)

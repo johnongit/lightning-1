@@ -1063,7 +1063,7 @@ static struct command_result *json_balance_snapshot(struct command *cmd,
 		    || !amount_msat_zero(debit_diff)) {
 			struct account *acct;
 			struct channel_event *ev;
-			u64 timestamp;
+			u64 timestamp_now;
 
 			/* This is *expected* on first run of bookkeeper! */
 			plugin_log(cmd->plugin,
@@ -1079,7 +1079,7 @@ static struct command_result *json_balance_snapshot(struct command *cmd,
 						  &credit_diff),
 				   acct_name);
 
-			timestamp = time_now().ts.tv_sec;
+			timestamp_now = time_now().ts.tv_sec;
 
 			/* Log a channel "journal entry" to get
 			 * the balances inline */
@@ -1103,7 +1103,7 @@ static struct command_result *json_balance_snapshot(struct command *cmd,
 					info = tal(new_accts, struct new_account_info);
 					info->acct = tal_steal(info, acct);
 					info->curr_bal = snap_balance;
-					info->timestamp = timestamp;
+					info->timestamp = timestamp_now;
 					info->currency =
 						tal_strdup(info, currency);
 
@@ -1294,7 +1294,7 @@ static struct command_result *lookup_invoice_desc(struct command *cmd,
 	struct out_req *req;
 
 	/* Otherwise will go away when event is cleaned up */
-	notleak(tal_steal(cmd, payment_hash));
+	tal_steal(cmd, payment_hash);
 	if (!amount_msat_zero(credit))
 		req = jsonrpc_request_start(cmd->plugin, cmd,
 					    "listinvoices",
@@ -1372,8 +1372,6 @@ listpeers_done(struct command *cmd, const char *buf,
 
 	if (info->ev->payment_id &&
 	    streq(info->ev->tag, mvt_tag_str(INVOICE))) {
-		/* Make memleak happy */
-		tal_steal(tmpctx, info);
 		return lookup_invoice_desc(cmd, info->ev->credit,
 					   info->ev->payment_id);
 	}
@@ -1591,8 +1589,6 @@ parse_and_log_chain_move(struct command *cmd,
 			if (tags[i] != INVOICE)
 				continue;
 
-			/* Keep memleak happy */
-			tal_steal(tmpctx, e);
 			return lookup_invoice_desc(cmd, e->credit,
 						   e->payment_id);
 		}
@@ -1673,8 +1669,6 @@ parse_and_log_channel_move(struct command *cmd,
 				maybe_record_rebalance(db, e);
 
 			db_commit_transaction(db);
-			/* Keep memleak happy */
-			tal_steal(tmpctx, e);
 			return lookup_invoice_desc(cmd, e->credit,
 						   e->payment_id);
 		}

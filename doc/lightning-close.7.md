@@ -50,7 +50,7 @@ we quickly accept the peer's proposal.
  
 The default is "50%".
 
-*wrong_funding_txid* can only be specified if both sides have offered
+*wrong_funding* can only be specified if both sides have offered
 the "shutdown_wrong_funding" feature (enabled by the
 **experimental-shutdown-wrong-funding** option): it must be a
 transaction id followed by a colon then the output number.  Instead of
@@ -104,9 +104,11 @@ RETURN VALUE
 
 [comment]: # (GENERATE-FROM-SCHEMA-START)
 On success, an object is returned, containing:
+
 - **type** (string): Whether we successfully negotiated a mutual close, closed without them, or discarded not-yet-opened channel (one of "mutual", "unilateral", "unopened")
 
 If **type** is "mutual" or "unilateral":
+
   - **tx** (hex): the raw bitcoin transaction used to close the channel (if it was open)
   - **txid** (txid): the transaction id of the *tx* field
 
@@ -133,4 +135,4 @@ RESOURCES
 
 Main web site: <https://github.com/ElementsProject/lightning>
 
-[comment]: # ( SHA256STAMP:3b645a2105f2b428889d097283cb56ba9c8d6cba90343ac779f2fb6e26a1c202)
+[comment]: # ( SHA256STAMP:6a438338ae697732f0100f9e1566b9b8d189778cdb05681305e060487d68663e)

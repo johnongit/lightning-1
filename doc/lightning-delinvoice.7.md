@@ -26,24 +26,27 @@ Note: The return is the same as an object from lightning-listinvoice(7).
 
 [comment]: # (GENERATE-FROM-SCHEMA-START)
 On success, an object is returned, containing:
+
 - **label** (string): Unique label given at creation time
-- **payment_hash** (hash): the hash of the *payment_preimage* which will prove payment (always 64 characters)
+- **payment\_hash** (hash): the hash of the *payment_preimage* which will prove payment (always 64 characters)
 - **status** (string): State of invoice (one of "paid", "expired", "unpaid")
-- **expires_at** (u64): UNIX timestamp when invoice expires (or expired)
+- **expires\_at** (u64): UNIX timestamp when invoice expires (or expired)
 - **bolt11** (string, optional): BOLT11 string
 - **bolt12** (string, optional): BOLT12 string
-- **amount_msat** (msat, optional): the amount required to pay this invoice
+- **amount\_msat** (msat, optional): the amount required to pay this invoice
 - **description** (string, optional): description used in the invoice
 
 If **bolt12** is present:
-  - **local_offer_id** (hex, optional): offer for which this invoice was created
-  - **payer_note** (string, optional): the optional *payer_note* from invoice_request which created this invoice
+
+  - **local\_offer\_id** (hex, optional): offer for which this invoice was created
+  - **payer\_note** (string, optional): the optional *payer_note* from invoice_request which created this invoice
 
 If **status** is "paid":
-  - **pay_index** (u64): unique index for this invoice payment
-  - **amount_received_msat** (msat): how much was actually received
-  - **paid_at** (u64): UNIX timestamp of when payment was received
-  - **payment_preimage** (secret): SHA256 of this is the *payment_hash* offered in the invoice (always 64 characters)
+
+  - **pay\_index** (u64): unique index for this invoice payment
+  - **amount\_received\_msat** (msat): how much was actually received
+  - **paid\_at** (u64): UNIX timestamp of when payment was received
+  - **payment\_preimage** (secret): SHA256 of this is the *payment_hash* offered in the invoice (always 64 characters)
 
 [comment]: # (GENERATE-FROM-SCHEMA-END)
 
@@ -71,11 +74,11 @@ SEE ALSO
 
 lightning-listinvoice(7), lightning-waitinvoice(7),
 lightning-invoice(7), lightning-delexpiredinvoice(7),
-lightning-autocleaninvoice(7)
+lightning-autoclean-status(7)
 
 RESOURCES
 ---------
 
 Main web site: <https://github.com/ElementsProject/lightning>
 
-[comment]: # ( SHA256STAMP:a24e80716475dea15f9762cf50382f21e3e09b803a669e217923d7019cd526e0)
+[comment]: # ( SHA256STAMP:d754daa61ddb65009fced566338af35ffb23069593f4741e6d8f6f138f60bb4f)
