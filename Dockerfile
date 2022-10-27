@@ -90,12 +90,13 @@ RUN git clone https://github.com/ZmnSCPxj/clboss.git && \
     ./configure && make && \
     make install
 
-RUN wget -q https://zlib.net/zlib-1.2.12.tar.gz \
-&& tar xvf zlib-1.2.12.tar.gz \
-&& cd zlib-1.2.12 \
+
+RUN wget -q https://zlib.net/zlib-1.2.13.tar.gz \
+&& tar xvf zlib-1.2.13.tar.gz \
+&& cd zlib-1.2.13 \
 && ./configure \
 && make \
-&& make install && cd .. && rm zlib-1.2.12.tar.gz && rm -rf zlib-1.2.12
+&& make install && cd .. && rm zlib-1.2.13.tar.gz && rm -rf zlib-1.2.13
 
 RUN apt-get install -y --no-install-recommends unzip tclsh \
 && wget -q https://www.sqlite.org/2019/sqlite-src-3290000.zip \
@@ -126,6 +127,7 @@ ENV PYTHON_VERSION=3
 RUN curl -sSL https://raw.githubusercontent.com/python-poetry/poetry/master/install-poetry.py | python3 - \
     && pip3 install -U pip \
     && pip3 install -U wheel \
+    && pip3 install -U mako \
     && /root/.local/bin/poetry config virtualenvs.create false \
     && /root/.local/bin/poetry install
 
@@ -142,23 +144,30 @@ RUN apt-get update && apt-get install -y --no-install-recommends default-jdk lib
     apt-get -y install nodejs &&\
     rm -rf /var/lib/apt/lists/*
 # Install watchtower client
-RUN pip3 install --upgrade pip
+RUN curl https://sh.rustup.rs -sSf | sh
+RUN cargo install --path watchtower-plugin
+#RUN pip3 install --upgrade pip
 
-RUN mkdir -p /python-plugin/plugins  && \
-    git clone https://github.com/talaia-labs/python-teos.git && \
-    cd python-teos &&  pip3 install -r requirements.txt && \
-    cd watchtower-plugin && pip3 install -r requirements.txt && \
-    pip3 install pyln-client==0.10.1 && \
-    cd /python-teos && COMMON_ONLY=1 pip3 install . 
+#RUN mkdir -p /python-plugin/plugins  && \
+#    git clone https://github.com/talaia-labs/python-teos.git && \
+#    cd python-teos &&  pip3 install -r requirements.txt && \
+#    cd watchtower-plugin && pip3 install -r requirements.txt && \
+#    pip3 install pyln-client==0.10.1 && \
+#    cd /python-teos && COMMON_ONLY=1 pip3 install . 
+
 
 ## Install cln-rest for RTL
 RUN mkdir -p /python-plugin/plugins \
     && cd /python-plugin/plugins && \
     git clone https://github.com/Ride-The-Lightning/c-lightning-REST.git && \
     cd c-lightning-REST && \
-    git checkout v0.7.2 && \
+    git checkout v0.9.0 && \
     npm install
 
+# Install peerswap
+RUN git clone https://github.com/ElementsProject/peerswap.git /plugins/peerswap && \
+    cd /plugins/peerswap &&\
+    make cln-release
 
 ## Install btcli4j
 RUN git clone https://github.com/clightning4j/btcli4j.git /plugins/btcli4j && \
@@ -166,8 +175,8 @@ RUN git clone https://github.com/clightning4j/btcli4j.git /plugins/btcli4j && \
     ./gradlew --stacktrace createRunnableScript
 
 ## Install sparko
-RUN curl -L https://github.com/fiatjaf/sparko/releases/download/v2.9/sparko_linux_amd64 --output /root/sparko_linux_amd64 && \
-    chmod +x /root/sparko_linux_amd64
+#RUN curl -L https://github.com/fiatjaf/sparko/releases/download/v2.9/sparko_linux_amd64 --output /root/sparko_linux_amd64 && \
+#    chmod +x /root/sparko_linux_amd64
 
 COPY --from=builder /usr/local/bin /usr/local/bin
 
