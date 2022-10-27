@@ -441,7 +441,7 @@ if the funding transaction has been included into a block.
     "id": "03864ef025fde8fb587d989186ce6a4a186895ee44a926bfc370e2c366597a3f8f",
     "funding_msat": 100000000,
     "funding_txid": "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b",
-    "funding_locked": false
+    "channel_ready": false
   }
 }
 ```
@@ -873,6 +873,20 @@ current accounts (`account_id` matches the `account_id` emitted from
 }
 ```
 
+### `block_added`
+
+Emitted after each block is received from bitcoind, either during the initial sync or
+throughout the node's life as new blocks appear.
+
+```json
+{
+    "block": {
+      "hash": "000000000000000000034bdb3c01652a0aa8f63d32f949313d55af2509f9d245",
+      "height": 753304
+    }
+}
+```
+
 ### `openchannel_peer_sigs`
 
 When opening a channel with a peer using the collaborative transaction protocol
@@ -1184,13 +1198,29 @@ e.g.
 {
     "result": "continue",
     "close_to": "bc1qlq8srqnz64wgklmqvurv7qnr4rvtq2u96hhfg2"
+	"mindepth": 0,
+	"reserve": "1234sat"
 }
 ```
 
 Note that `close_to` must be a valid address for the current chain,
 an invalid address will cause the node to exit with an error.
 
-Note that `openchannel` is a chained hook. Therefore `close_to` will only be
+ - `mindepth` is the number of confirmations to require before making
+   the channel usable. Notice that setting this to 0 (`zeroconf`) or
+   some other low value might expose you to double-spending issues, so
+   only lower this value from the default if you trust the peer not to
+   double-spend, or you reject incoming payments, including forwards,
+   until the funding is confirmed.
+
+ - `reserve` is an absolute value for the amount in the channel that
+   the peer must keep on their side. This ensures that they always
+   have something to lose, so only lower this below the 1% of funding
+   amount if you trust the peer. The protocol requires this to be
+   larger than the dust limit, hence it will be adjusted to be the
+   dust limit if the specified value is below.
+
+Note that `openchannel` is a chained hook. Therefore `close_to`, `reserve` will only be
 evaluated for the first plugin that sets it. If more than one plugin tries to
 set a `close_to` address an error will be logged.
 
@@ -1342,12 +1372,15 @@ requests an RBF for a channel funding transaction.
   "rbf_channel": {
     "id": "03864ef025fde8fb587d989186ce6a4a186895ee44a926bfc370e2c366597a3f8f",
     "channel_id": "252d1b0a1e57895e84137f28cf19ab2c35847e284c112fefdecc7afeaa5c1de7",
+    "their_last_funding_msat": 100000000,
     "their_funding_msat": 100000000,
+    "our_last_funding_msat": 100000000,
     "funding_feerate_per_kw": 7500,
     "feerate_our_max": 10000,
     "feerate_our_min": 253,
     "channel_max_msat": 16777215000,
-    "locktime": 2453
+    "locktime": 2453,
+    "requested_lease_msat": 100000000,
   }
 }
 ```
@@ -1402,7 +1435,8 @@ The payload of the hook call has the following format:
     "cltv_expiry": 500028,
     "cltv_expiry_relative": 10,
     "payment_hash": "0000000000000000000000000000000000000000000000000000000000000000"
-  }
+  },
+  "forward_to": "0000000000000000000000000000000000000000000000000000000000000000"
 }
 ```
 
@@ -1439,6 +1473,7 @@ For detailed information about each field please refer to [BOLT 04 of the specif
      blockheight.
    - `payment_hash` is the hash whose `payment_preimage` will unlock the funds
      and allow us to claim the HTLC.
+ - `forward_to`: if set, the channel_id we intend to forward this to (will not be present if the short_channel_id was invalid or we were the final destination).
 
 The hook response must have one of the following formats:
 
@@ -1459,6 +1494,7 @@ the response.  Note that this is always a TLV-style payload, so unlike
 hex digits long).  This will be re-parsed; it's useful for removing
 onion fields which a plugin doesn't want lightningd to consider.
 
+It can also specify `forward_to` in the response, replacing the destination.  This usually only makes sense if it wants to choose an alternate channel to the same next peer, but is useful if the `payload` is also replaced.
 
 ```json
 {
@@ -1737,13 +1773,13 @@ The plugin must broadcast it and respond with the following fields:
 
 [jsonrpc-spec]: https://www.jsonrpc.org/specification
 [jsonrpc-notification-spec]: https://www.jsonrpc.org/specification#notification
-[bolt4]: https://github.com/lightningnetwork/lightning-rfc/blob/master/04-onion-routing.md
-[bolt4-failure-messages]: https://github.com/lightningnetwork/lightning-rfc/blob/master/04-onion-routing.md#failure-messages
-[bolt4-failure-onion]: https://github.com/lightningnetwork/lightning-rfc/blob/master/04-onion-routing.md#returning-errors
-[bolt2-open-channel]: https://github.com/lightningnetwork/lightning-rfc/blob/master/02-peer-protocol.md#the-open_channel-message
+[bolt4]: https://github.com/lightning/bolts/blob/master/04-onion-routing.md
+[bolt4-failure-messages]: https://github.com/lightning/bolts/blob/master/04-onion-routing.md#failure-messages
+[bolt4-failure-onion]: https://github.com/lightning/bolts/blob/master/04-onion-routing.md#returning-errors
+[bolt2-open-channel]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-open_channel-message
 [sendcustommsg]: lightning-sendcustommsg.7.html
-[oddok]: https://github.com/lightningnetwork/lightning-rfc/blob/master/00-introduction.md#its-ok-to-be-odd
-[spec]: [https://github.com/lightningnetwork/lightning-rfc]
-[bolt9]: https://github.com/lightningnetwork/lightning-rfc/blob/master/09-features.md
+[oddok]: https://github.com/lightning/bolts/blob/master/00-introduction.md#its-ok-to-be-odd
+[spec]: [https://github.com/lightning/bolts]
+[bolt9]: https://github.com/lightning/bolts/blob/master/09-features.md
 [lightning-plugin]: lightning-plugin.7.md
 [pyln-client]: ../contrib/pyln-client

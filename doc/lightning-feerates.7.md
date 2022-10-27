@@ -46,33 +46,35 @@ RETURN VALUE
 
 [comment]: # (GENERATE-FROM-SCHEMA-START)
 On success, an object is returned, containing:
+
 - **perkb** (object, optional): If *style* parameter was perkb:
-  - **min_acceptable** (u32): The smallest feerate that you can use, usually the minimum relayed feerate of the backend
-  - **max_acceptable** (u32): The largest feerate we will accept from remote negotiations.  If a peer attempts to set the feerate higher than this we will unilaterally close the channel (or simply forget it if it's not open yet).
+  - **min\_acceptable** (u32): The smallest feerate that you can use, usually the minimum relayed feerate of the backend
+  - **max\_acceptable** (u32): The largest feerate we will accept from remote negotiations.  If a peer attempts to set the feerate higher than this we will unilaterally close the channel (or simply forget it if it's not open yet).
   - **opening** (u32, optional): Default feerate for lightning-fundchannel(7) and lightning-withdraw(7)
-  - **mutual_close** (u32, optional): Feerate to aim for in cooperative shutdown.  Note that since mutual close is a **negotiation**, the actual feerate used in mutual close will be somewhere between this and the corresponding mutual close feerate of the peer.
-  - **unilateral_close** (u32, optional): Feerate for commitment_transaction in a live channel which we originally funded
-  - **delayed_to_us** (u32, optional): Feerate for returning unilateral close funds to our wallet
-  - **htlc_resolution** (u32, optional): Feerate for returning unilateral close HTLC outputs to our wallet
+  - **mutual\_close** (u32, optional): Feerate to aim for in cooperative shutdown.  Note that since mutual close is a **negotiation**, the actual feerate used in mutual close will be somewhere between this and the corresponding mutual close feerate of the peer.
+  - **unilateral\_close** (u32, optional): Feerate for commitment_transaction in a live channel which we originally funded
+  - **delayed\_to\_us** (u32, optional): Feerate for returning unilateral close funds to our wallet
+  - **htlc\_resolution** (u32, optional): Feerate for returning unilateral close HTLC outputs to our wallet
   - **penalty** (u32, optional): Feerate to start at when penalizing a cheat attempt
 - **perkw** (object, optional): If *style* parameter was perkw:
-  - **min_acceptable** (u32): The smallest feerate that you can use, usually the minimum relayed feerate of the backend
-  - **max_acceptable** (u32): The largest feerate we will accept from remote negotiations.  If a peer attempts to set the feerate higher than this we will unilaterally close the channel (or simply forget it if it's not open yet).
+  - **min\_acceptable** (u32): The smallest feerate that you can use, usually the minimum relayed feerate of the backend
+  - **max\_acceptable** (u32): The largest feerate we will accept from remote negotiations.  If a peer attempts to set the feerate higher than this we will unilaterally close the channel (or simply forget it if it's not open yet).
   - **opening** (u32, optional): Default feerate for lightning-fundchannel(7) and lightning-withdraw(7)
-  - **mutual_close** (u32, optional): Feerate to aim for in cooperative shutdown.  Note that since mutual close is a **negotiation**, the actual feerate used in mutual close will be somewhere between this and the corresponding mutual close feerate of the peer.
-  - **unilateral_close** (u32, optional): Feerate for commitment_transaction in a live channel which we originally funded
-  - **delayed_to_us** (u32, optional): Feerate for returning unilateral close funds to our wallet
-  - **htlc_resolution** (u32, optional): Feerate for returning unilateral close HTLC outputs to our wallet
+  - **mutual\_close** (u32, optional): Feerate to aim for in cooperative shutdown.  Note that since mutual close is a **negotiation**, the actual feerate used in mutual close will be somewhere between this and the corresponding mutual close feerate of the peer.
+  - **unilateral\_close** (u32, optional): Feerate for commitment_transaction in a live channel which we originally funded
+  - **delayed\_to\_us** (u32, optional): Feerate for returning unilateral close funds to our wallet
+  - **htlc\_resolution** (u32, optional): Feerate for returning unilateral close HTLC outputs to our wallet
   - **penalty** (u32, optional): Feerate to start at when penalizing a cheat attempt
-- **onchain_fee_estimates** (object, optional):
-  - **opening_channel_satoshis** (u64): Estimated cost of typical channel open
-  - **mutual_close_satoshis** (u64): Estimated cost of typical channel close
-  - **unilateral_close_satoshis** (u64): Estimated cost of typical unilateral close (without HTLCs)
-  - **htlc_timeout_satoshis** (u64): Estimated cost of typical HTLC timeout transaction
-  - **htlc_success_satoshis** (u64): Estimated cost of typical HTLC fulfillment transaction
+- **onchain\_fee\_estimates** (object, optional):
+  - **opening\_channel\_satoshis** (u64): Estimated cost of typical channel open
+  - **mutual\_close\_satoshis** (u64): Estimated cost of typical channel close
+  - **unilateral\_close\_satoshis** (u64): Estimated cost of typical unilateral close (without HTLCs)
+  - **htlc\_timeout\_satoshis** (u64): Estimated cost of typical HTLC timeout transaction
+  - **htlc\_success\_satoshis** (u64): Estimated cost of typical HTLC fulfillment transaction
 
 The following warnings may also be returned:
-- **warning_missing_feerates**: Some fee estimates are missing
+
+- **warning\_missing\_feerates**: Some fee estimates are missing
 
 [comment]: # (GENERATE-FROM-SCHEMA-END)
 
@@ -119,4 +121,4 @@ RESOURCES
 
 Main web site: <https://github.com/ElementsProject/lightning>
 
-[comment]: # ( SHA256STAMP:96fde8cf67c9b0dda5a1866dfadfb1d7da7e593b3080948662070382d4a9537f)
+[comment]: # ( SHA256STAMP:d448abe4c00efb8cb68edf6f8316f130ed45a26223b151ac0647bf5b69aec4fd)

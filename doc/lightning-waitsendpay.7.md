@@ -34,21 +34,24 @@ RETURN VALUE
 
 [comment]: # (GENERATE-FROM-SCHEMA-START)
 On success, an object is returned, containing:
+
 - **id** (u64): unique ID for this payment attempt
-- **payment_hash** (hash): the hash of the *payment_preimage* which will prove payment (always 64 characters)
+- **payment\_hash** (hash): the hash of the *payment_preimage* which will prove payment (always 64 characters)
 - **status** (string): status of the payment (always "complete")
-- **created_at** (u64): the UNIX timestamp showing when this payment was initiated
-- **amount_sent_msat** (msat): The amount sent
+- **created\_at** (u64): the UNIX timestamp showing when this payment was initiated
+- **amount\_sent\_msat** (msat): The amount sent
 - **groupid** (u64, optional): Grouping key to disambiguate multiple attempts to pay an invoice or the same payment_hash
-- **amount_msat** (msat, optional): The amount delivered to destination (if known)
+- **amount\_msat** (msat, optional): The amount delivered to destination (if known)
 - **destination** (pubkey, optional): the final destination of the payment if known
+- **completed\_at** (number, optional): the UNIX timestamp showing when this payment was completed
 - **label** (string, optional): the label, if given to sendpay
 - **partid** (u64, optional): the *partid*, if given to sendpay
 - **bolt11** (string, optional): the bolt11 string (if pay supplied one)
 - **bolt12** (string, optional): the bolt12 string (if supplied for pay: **experimental-offers** only).
 
 If **status** is "complete":
-  - **payment_preimage** (secret): the proof of payment: SHA256 of this **payment_hash** (always 64 characters)
+
+  - **payment\_preimage** (secret): the proof of payment: SHA256 of this **payment_hash** (always 64 characters)
 
 [comment]: # (GENERATE-FROM-SCHEMA-END)
 
@@ -101,4 +104,4 @@ RESOURCES
 
 Main web site: <https://github.com/ElementsProject/lightning>
 
-[comment]: # ( SHA256STAMP:8b5a3a8ce1f3c2dcd3e2b8a262d15bcd61700f971830e939a841352aa9d0f849)
+[comment]: # ( SHA256STAMP:f4dbe3ecc88a294f7bb983a2f2b8e9613e440e4564580e51dd30fc83ba218a91)

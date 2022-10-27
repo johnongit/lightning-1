@@ -12,14 +12,13 @@
 #include <ccan/tal/tal.h>
 #include <ccan/time/time.h>
 #include <common/amount.h>
-#include <common/errcode.h>
+#include <common/jsonrpc_errors.h>
 
 struct command;
 struct io_conn;
 struct log;
 struct json_escape;
 struct pubkey;
-struct point32;
 struct bip340sig;
 struct secret;
 struct node_id;
@@ -260,8 +259,8 @@ void json_add_tok(struct json_stream *result, const char *fieldname,
                   const jsmntok_t *tok, const char *buffer);
 
 /* Add an error code */
-void json_add_errcode(struct json_stream *result, const char *fieldname,
-		      errcode_t code);
+void json_add_jsonrpc_errcode(struct json_stream *result, const char *fieldname,
+			      enum jsonrpc_errcode code);
 
 /* Add "bolt11" or "bolt12" field, depending on invstring. */
 void json_add_invstring(struct json_stream *result, const char *invstring);
@@ -270,11 +269,6 @@ void json_add_invstring(struct json_stream *result, const char *invstring);
 void json_add_pubkey(struct json_stream *response,
 		     const char *fieldname,
 		     const struct pubkey *key);
-
-/* '"fieldname" : "89abcdef..."' or "89abcdef..." if fieldname is NULL */
-void json_add_point32(struct json_stream *response,
-		       const char *fieldname,
-		       const struct point32 *key);
 
 /* '"fieldname" : "89abcdef..."' or "89abcdef..." if fieldname is NULL */
 void json_add_bip340sig(struct json_stream *response,

@@ -31,11 +31,11 @@ ZmnSCPxj <<ZmnSCPxj@protonmail.com>> is mainly responsible.
 SEE ALSO
 --------
 
-lightning-delinvoice(7), lightning-autocleaninvoice(7)
+lightning-delinvoice(7), lightning-autoclean-status(7)
 
 RESOURCES
 ---------
 
 Main web site: <https://github.com/ElementsProject/lightning>
 
-[comment]: # ( SHA256STAMP:c71baf4b5863fd6f4d2ba21a97d4106195ba10c5add21087142b1a5ee533da91)
+[comment]: # ( SHA256STAMP:01526643e128e75057c668cd5dd36e79f075ca847bc692629e1c773b6c940ae6)

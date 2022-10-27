@@ -69,7 +69,7 @@ static bool public_msg_type(enum peer_wire type)
 	case WIRE_ACCEPT_CHANNEL:
 	case WIRE_FUNDING_CREATED:
 	case WIRE_FUNDING_SIGNED:
-	case WIRE_FUNDING_LOCKED:
+	case WIRE_CHANNEL_READY:
 	case WIRE_OPEN_CHANNEL2:
 	case WIRE_ACCEPT_CHANNEL2:
 	case WIRE_INIT_RBF:
@@ -91,7 +91,6 @@ static bool public_msg_type(enum peer_wire type)
 	case WIRE_QUERY_CHANNEL_RANGE:
 	case WIRE_REPLY_CHANNEL_RANGE:
 	case WIRE_GOSSIP_TIMESTAMP_FILTER:
-	case WIRE_OBS2_ONION_MESSAGE:
 	case WIRE_ONION_MESSAGE:
 #if EXPERIMENTAL_FEATURES
 	case WIRE_STFU:
@@ -115,6 +114,7 @@ u8 *gossip_store_next(const tal_t *ctx,
 		      size_t *off, size_t *end)
 {
 	u8 *msg = NULL;
+	size_t initial_off = *off;
 
 	while (!msg) {
 		struct gossip_hdr hdr;
@@ -146,6 +146,14 @@ u8 *gossip_store_next(const tal_t *ctx,
 			continue;
 		}
 
+		/* Messages can be up to 64k, but we also have internal ones:
+		 * 128k is plenty. */
+		if (msglen > 128 * 1024)
+			status_failed(STATUS_FAIL_INTERNAL_ERROR,
+				      "gossip_store: oversize msg len %u at"
+				      " offset %zu (was at %zu)",
+				      msglen, *off, initial_off);
+
 		checksum = be32_to_cpu(hdr.crc);
 		msg = tal_arr(ctx, u8, msglen);
 		r = pread(*gossip_store_fd, msg, msglen, *off + r);
@@ -155,8 +163,8 @@ u8 *gossip_store_next(const tal_t *ctx,
 		if (checksum != crc32c(be32_to_cpu(hdr.timestamp), msg, msglen))
 			status_failed(STATUS_FAIL_INTERNAL_ERROR,
 				      "gossip_store: bad checksum at offset %zu"
-				      ": %s",
-				      *off, tal_hex(tmpctx, msg));
+				      "(was at %zu): %s",
+				      *off, initial_off, tal_hex(tmpctx, msg));
 
 		/* Definitely processing it now */
 		*off += sizeof(hdr) + msglen;
@@ -190,8 +198,8 @@ size_t find_gossip_store_end(int gossip_store_fd, size_t off)
 	} buf;
 	int r;
 
-	while ((r = read(gossip_store_fd, &buf,
-			 sizeof(buf.hdr) + sizeof(buf.type)))
+	while ((r = pread(gossip_store_fd, &buf,
+			 sizeof(buf.hdr) + sizeof(buf.type), off))
 	       == sizeof(buf.hdr) + sizeof(buf.type)) {
 		u32 msglen = be32_to_cpu(buf.hdr.len) & GOSSIP_STORE_LEN_MASK;
 
@@ -200,7 +208,6 @@ size_t find_gossip_store_end(int gossip_store_fd, size_t off)
 			break;
 
 		off += sizeof(buf.hdr) + msglen;
-		lseek(gossip_store_fd, off, SEEK_SET);
 	}
 	return off;
 }

@@ -4,7 +4,7 @@ lightning-keysend -- Send funds to a node without an invoice
 SYNOPSIS
 --------
 
-**keysend** *destination* *msatoshi* [*label*] [*maxfeepercent*] [*retry\_for*] [*maxdelay*] [*exemptfee*]
+**keysend** *destination* *msatoshi* [*label*] [*maxfeepercent*] [*retry\_for*] [*maxdelay*] [*exemptfee*] [*extratlvs*]
 
 DESCRIPTION
 -----------
@@ -35,6 +35,8 @@ Unlike lightning-pay(7), issuing the same `keysend` commands multiple times will
 
 Until *retry_for* seconds passes (default: 60), the command will keep finding routes and retrying the payment.
 However, a payment may be delayed for up to `maxdelay` blocks by another node; clients should be prepared for this worst case.
+
+*extratlvs* is an optional dictionary of additional fields to insert into the final tlv.  The format is 'fieldnumber': 'hexstring'.
 
 When using *lightning-cli*, you may skip optional parameters by using
 *null*. Alternatively, use **-k** option to provide parameters by name.
@@ -67,17 +69,19 @@ RETURN VALUE
 
 [comment]: # (GENERATE-FROM-SCHEMA-START)
 On success, an object is returned, containing:
-- **payment_preimage** (secret): the proof of payment: SHA256 of this **payment_hash** (always 64 characters)
-- **payment_hash** (hash): the hash of the *payment_preimage* which will prove payment (always 64 characters)
-- **created_at** (number): the UNIX timestamp showing when this payment was initiated
+
+- **payment\_preimage** (secret): the proof of payment: SHA256 of this **payment_hash** (always 64 characters)
+- **payment\_hash** (hash): the hash of the *payment_preimage* which will prove payment (always 64 characters)
+- **created\_at** (number): the UNIX timestamp showing when this payment was initiated
 - **parts** (u32): how many attempts this took
-- **amount_msat** (msat): Amount the recipient received
-- **amount_sent_msat** (msat): Total amount we sent (including fees)
+- **amount\_msat** (msat): Amount the recipient received
+- **amount\_sent\_msat** (msat): Total amount we sent (including fees)
 - **status** (string): status of payment (always "complete")
 - **destination** (pubkey, optional): the final destination of the payment
 
 The following warnings may also be returned:
-- **warning_partial_completion**: Not all parts of a multi-part payment have completed
+
+- **warning\_partial\_completion**: Not all parts of a multi-part payment have completed
 
 [comment]: # (GENERATE-FROM-SCHEMA-END)
 
@@ -114,4 +118,4 @@ RESOURCES
 
 Main web site: <https://github.com/ElementsProject/lightning>
 
-[comment]: # ( SHA256STAMP:f8e12220302756c5a95eef2ec428c1d7adaba3025b0716e6b6581f783d92b648)
+[comment]: # ( SHA256STAMP:d208bd6f3e78b039a4790b8de599ffd819aa169c59430ac487fd7030cd3fe640)

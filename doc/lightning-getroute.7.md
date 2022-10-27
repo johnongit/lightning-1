@@ -279,10 +279,11 @@ RETURN VALUE
 
 [comment]: # (GENERATE-FROM-SCHEMA-START)
 On success, an object containing **route** is returned.  It is an array of objects, where each object contains:
+
 - **id** (pubkey): The node at the end of this hop
-- **channel** (short_channel_id): The channel joining these nodes
+- **channel** (short\_channel\_id): The channel joining these nodes
 - **direction** (u32): 0 if this channel is traversed from lesser to greater **id**, otherwise 1
-- **amount_msat** (msat): The amount expected by the node at the end of this hop
+- **amount\_msat** (msat): The amount expected by the node at the end of this hop
 - **delay** (u32): The total CLTV expected by the node at the end of this hop
 - **style** (string): The features understood by the destination node (always "tlv")
 
@@ -309,4 +310,4 @@ RESOURCES
 
 Main web site: <https://github.com/ElementsProject/lightning>
 
-[comment]: # ( SHA256STAMP:db8834d9a318688d2c4801b85f06aa5afb3120e064b3654433469bca09e776a0)
+[comment]: # ( SHA256STAMP:e592a238b3701399c1e8de45cb7186b9714742daefa2f33287019f860c1cc24d)

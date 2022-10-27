@@ -135,7 +135,6 @@ static void listnodes_done(const char *buffer,
 		t = json_get_member(buffer, t, "nodes");
 
 	if (!deprecated_apis && (!t || t->size == 0)) {
-		struct json_stream *response;
 		response = json_stream_fail(can->cmd, SIGNMESSAGE_PUBKEY_NOT_FOUND,
 							"pubkey not found in the graph");
 		json_add_node_id(response, "claimed_key", &can->id);
@@ -213,7 +212,8 @@ static struct command_result *json_checkmessage(struct command *cmd,
 		node_id_from_pubkey(&can->id, &reckey);
 		can->cmd = cmd;
 		req = jsonrpc_request_start(cmd, "listnodes",
-					    cmd->ld->log,
+					    cmd->id,
+					    command_log(cmd),
 					    NULL, listnodes_done,
 					    can);
 		json_add_node_id(req->stream, "id", &can->id);

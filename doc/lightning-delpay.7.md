@@ -4,15 +4,18 @@ lightning-delpay -- Command for removing a completed or failed payment
 SYNOPSIS
 --------
 
-**delpay** *payment\_hash* *status*
+**delpay** *payment\_hash* *status* [*partid* *groupid*]
 
 DESCRIPTION
 -----------
 
-The **delpay** RPC command deletes a payment with the given `payment_hash` if its status is either `complete` or `failed`. Deleting a `pending` payment is an error.
+The **delpay** RPC command deletes a payment with the given `payment_hash` if its status is either `complete` or `failed`. Deleting a `pending` payment is an error.  If *partid* and *groupid* are not specified, all payment parts are deleted.
 
 - *payment\_hash*: The unique identifier of a payment.
 - *status*: Expected status of the payment. 
+- *partid*: Specific partid to delete (must be paired with *groupid*)
+- *groupid*: Specific groupid to delete (must be paired with *partid*)
+
 Only deletes if the payment status matches.
 
 EXAMPLE JSON REQUEST
@@ -37,16 +40,18 @@ payments will be returned -- one payment object for each partid.
 
 [comment]: # (GENERATE-FROM-SCHEMA-START)
 On success, an object containing **payments** is returned.  It is an array of objects, where each object contains:
+
 - **id** (u64): unique ID for this payment attempt
-- **payment_hash** (hex): the hash of the *payment_preimage* which will prove payment (always 64 characters)
+- **payment\_hash** (hex): the hash of the *payment_preimage* which will prove payment (always 64 characters)
 - **status** (string): status of the payment (one of "pending", "failed", "complete")
-- **amount_sent_msat** (msat): the amount we actually sent, including fees
-- **created_at** (u64): the UNIX timestamp showing when this payment was initiated
+- **amount\_sent\_msat** (msat): the amount we actually sent, including fees
+- **created\_at** (u64): the UNIX timestamp showing when this payment was initiated
 - **partid** (u64, optional): unique ID within this (multi-part) payment
 - **destination** (pubkey, optional): the final destination of the payment if known
-- **amount_msat** (msat, optional): the amount the destination received, if known
+- **amount\_msat** (msat, optional): the amount the destination received, if known
+- **completed\_at** (u64, optional): the UNIX timestamp showing when this payment was completed
 - **groupid** (u64, optional): Grouping key to disambiguate multiple attempts to pay an invoice or the same payment_hash
-- **payment_preimage** (hex, optional): proof of payment (always 64 characters)
+- **payment\_preimage** (hex, optional): proof of payment (always 64 characters)
 - **label** (string, optional): the label, if given to sendpay
 - **bolt11** (string, optional): the bolt11 string (if pay supplied one)
 - **bolt12** (string, optional): the bolt12 string (if supplied for pay: **experimental-offers** only).
@@ -101,4 +106,4 @@ RESOURCES
 ---------
 
 Main web site: <https://github.com/ElementsProject/lightning>
-[comment]: # ( SHA256STAMP:ecdf9fe432142054328abb6aa3f76b726968dd28db1fc26875a81f291e10135a)
+[comment]: # ( SHA256STAMP:1ce2241eeae759ed5566342fb7810e62fa2c618f2465314f17376ebe9b6d24f8)

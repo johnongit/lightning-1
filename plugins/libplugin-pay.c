@@ -326,7 +326,7 @@ static void channel_hints_update(struct payment *p,
 				 u16 *htlc_budget)
 {
 	struct payment *root = payment_root(p);
-	struct channel_hint hint;
+	struct channel_hint newhint;
 
 	/* If the channel is marked as enabled it must have an estimate. */
 	assert(!enabled || estimated_capacity != NULL);
@@ -372,25 +372,25 @@ static void channel_hints_update(struct payment *p,
 	}
 
 	/* No hint found, create one. */
-	hint.enabled = enabled;
-	hint.scid.scid = scid;
-	hint.scid.dir = direction;
-	hint.local = local;
+	newhint.enabled = enabled;
+	newhint.scid.scid = scid;
+	newhint.scid.dir = direction;
+	newhint.local = local;
 	if (estimated_capacity != NULL)
-		hint.estimated_capacity = *estimated_capacity;
+		newhint.estimated_capacity = *estimated_capacity;
 
 	if (htlc_budget != NULL)
-		hint.htlc_budget = *htlc_budget;
+		newhint.htlc_budget = *htlc_budget;
 
-	tal_arr_expand(&root->channel_hints, hint);
+	tal_arr_expand(&root->channel_hints, newhint);
 
 	paymod_log(
 	    p, LOG_DBG,
 	    "Added a channel hint for %s: enabled %s, estimated capacity %s",
-	    type_to_string(tmpctx, struct short_channel_id_dir, &hint.scid),
-	    hint.enabled ? "true" : "false",
+	    type_to_string(tmpctx, struct short_channel_id_dir, &newhint.scid),
+	    newhint.enabled ? "true" : "false",
 	    type_to_string(tmpctx, struct amount_msat,
-			   &hint.estimated_capacity));
+			   &newhint.estimated_capacity));
 }
 
 static void payment_exclude_most_expensive(struct payment *p)
@@ -515,8 +515,8 @@ static bool payment_chanhints_apply_route(struct payment *p, bool remove)
 		/* For all channels we check that they have a
 		 * sufficiently large estimated capacity to have some
 		 * chance of succeeding. */
-		apply &= amount_msat_greater(curhint->estimated_capacity,
-					     curhop->amount);
+		apply &= amount_msat_greater_eq(curhint->estimated_capacity,
+						curhop->amount);
 
 		if (!apply) {
 			/* This can happen in case of multiple
@@ -530,6 +530,15 @@ static bool payment_chanhints_apply_route(struct payment *p, bool remove)
 				   type_to_string(tmpctx,
 						  struct short_channel_id_dir,
 						  &curhint->scid));
+			paymod_log(
+			    p, LOG_DBG,
+			    "Capacity: estimated_capacity=%s, hop_amount=%s. "
+			    "HTLC Budget: htlc_budget=%d, local=%d",
+			    type_to_string(tmpctx, struct amount_msat,
+					   &curhint->estimated_capacity),
+			    type_to_string(tmpctx, struct amount_msat,
+					   &curhop->amount),
+			    curhint->htlc_budget, curhint->local);
 			return false;
 		}
 	}
@@ -584,10 +593,8 @@ payment_get_excluded_channels(const tal_t *ctx, struct payment *p)
 		if (!hint->enabled)
 			tal_arr_expand(&res, hint->scid);
 
-		else if (amount_msat_greater_eq(p->amount,
-						hint->estimated_capacity))
-			/* We exclude on equality because we've set the
-			 * estimate to the smallest failed attempt. */
+		else if (amount_msat_greater(p->amount,
+					     hint->estimated_capacity))
 			tal_arr_expand(&res, hint->scid);
 
 		else if (hint->local && hint->htlc_budget == 0)
@@ -1215,9 +1222,7 @@ handle_final_failure(struct command *cmd,
 	case WIRE_PERMANENT_NODE_FAILURE:
 	case WIRE_TEMPORARY_NODE_FAILURE:
 	case WIRE_REQUIRED_NODE_FEATURE_MISSING:
-#if EXPERIMENTAL_FEATURES
 	case WIRE_INVALID_ONION_BLINDING:
-#endif
  	case WIRE_INCORRECT_OR_UNKNOWN_PAYMENT_DETAILS:
 	case WIRE_MPP_TIMEOUT:
 		goto error;
@@ -1248,6 +1253,7 @@ handle_intermediate_failure(struct command *cmd,
 			    enum onion_wire failcode)
 {
 	struct payment *root = payment_root(p);
+	struct amount_msat estimated;
 
 	paymod_log(p, LOG_DBG,
 		   "Intermediate node %s reported %04x (%s) at %s on route %s",
@@ -1288,11 +1294,20 @@ handle_intermediate_failure(struct command *cmd,
 		break;
 
 	case WIRE_TEMPORARY_CHANNEL_FAILURE: {
+		estimated = errchan->amount;
+
+		/* Subtract one msat more, since we know that the amount did not
+		 * work. This allows us to then allow on equality, this is for
+		 * example necessary for local channels where exact matches
+		 * should be allowed. */
+		if (!amount_msat_sub(&estimated, estimated, AMOUNT_MSAT(1)))
+			abort();
+
 		/* These are an indication that the capacity was insufficient,
 		 * remember the amount we tried as an estimate. */
 		channel_hints_update(root, errchan->scid,
 				     errchan->direction, true, false,
-				     &errchan->amount, NULL);
+				     &estimated, NULL);
 		goto error;
 	}
 
@@ -1308,9 +1323,7 @@ handle_intermediate_failure(struct command *cmd,
 	case WIRE_REQUIRED_NODE_FEATURE_MISSING:
 	case WIRE_INVALID_ONION_PAYLOAD:
 	case WIRE_INVALID_REALM:
-#if EXPERIMENTAL_FEATURES
 	case WIRE_INVALID_ONION_BLINDING:
-#endif
 		tal_arr_expand(&root->excluded_nodes, *errnode);
 		goto error;
 
@@ -2222,9 +2235,7 @@ static bool payment_can_retry(struct payment *p)
 	case WIRE_PERMANENT_CHANNEL_FAILURE:
 	case WIRE_REQUIRED_CHANNEL_FEATURE_MISSING:
 	case WIRE_TEMPORARY_CHANNEL_FAILURE:
-#if EXPERIMENTAL_FEATURES
 	case WIRE_INVALID_ONION_BLINDING:
-#endif
 		return true;
 	}
 

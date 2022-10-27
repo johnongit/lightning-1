@@ -50,19 +50,20 @@ RETURN VALUE
 
 [comment]: # (GENERATE-FROM-SCHEMA-START)
 On success, an object is returned, containing:
+
 - **invoice** (string): The BOLT12 invoice we fetched
 - **changes** (object): Summary of changes from offer:
-  - **description_appended** (string, optional): extra characters appended to the *description* field.
+  - **description\_appended** (string, optional): extra characters appended to the *description* field.
   - **description** (string, optional): a completely replaced *description* field
-  - **vendor_removed** (string, optional): The *vendor* from the offer, which is missing in the invoice
+  - **vendor\_removed** (string, optional): The *vendor* from the offer, which is missing in the invoice
   - **vendor** (string, optional): a completely replaced *vendor* field
-  - **amount_msat** (msat, optional): the amount, if different from the offer amount multiplied by any *quantity* (or the offer had no amount, or was not in BTC).
-- **next_period** (object, optional): Only for recurring invoices if the next period is under the *recurrence_limit*:
+  - **amount\_msat** (msat, optional): the amount, if different from the offer amount multiplied by any *quantity* (or the offer had no amount, or was not in BTC).
+- **next\_period** (object, optional): Only for recurring invoices if the next period is under the *recurrence_limit*:
   - **counter** (u64): the index of the next period to fetchinvoice
   - **starttime** (u64): UNIX timestamp that the next period starts
   - **endtime** (u64): UNIX timestamp that the next period ends
-  - **paywindow_start** (u64): UNIX timestamp of the earliest time that the next invoice can be fetched
-  - **paywindow_end** (u64): UNIX timestamp of the latest time that the next invoice can be fetched
+  - **paywindow\_start** (u64): UNIX timestamp of the earliest time that the next invoice can be fetched
+  - **paywindow\_end** (u64): UNIX timestamp of the latest time that the next invoice can be fetched
 
 [comment]: # (GENERATE-FROM-SCHEMA-END)
 
@@ -88,4 +89,4 @@ RESOURCES
 
 Main web site: <https://github.com/ElementsProject/lightning>
 
-[comment]: # ( SHA256STAMP:83fcb7141eefc0e5d5bd1d23f6d05f1d32514bad53ed52fc61604ce049c75d54)
+[comment]: # ( SHA256STAMP:18164ef676c71c8d3abde89d974b3c74bd7fdb43356a737f937b2fb060795a47)

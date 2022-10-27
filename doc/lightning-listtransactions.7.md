@@ -26,6 +26,7 @@ RETURN VALUE
 
 [comment]: # (GENERATE-FROM-SCHEMA-START)
 On success, an object containing **transactions** is returned.  It is an array of objects, where each object contains:
+
 - **hash** (txid): the transaction id
 - **rawtx** (hex): the raw transaction
 - **blockheight** (u32): the block height of this tx
@@ -37,16 +38,16 @@ On success, an object containing **transactions** is returned.  It is an array o
   - **index** (u32): the output spent
   - **sequence** (u32): the nSequence value
   - **type** (string, optional): the purpose of this input (*EXPERIMENTAL_FEATURES* only) (one of "theirs", "deposit", "withdraw", "channel_funding", "channel_mutual_close", "channel_unilateral_close", "channel_sweep", "channel_htlc_success", "channel_htlc_timeout", "channel_penalty", "channel_unilateral_cheat")
-  - **channel** (short_channel_id, optional): the channel this input is associated with (*EXPERIMENTAL_FEATURES* only)
+  - **channel** (short\_channel\_id, optional): the channel this input is associated with (*EXPERIMENTAL_FEATURES* only)
 - **outputs** (array of objects): Each output, in order:
   - **index** (u32): the 0-based output number
-  - **amount_msat** (msat): the amount of the output
+  - **amount\_msat** (msat): the amount of the output
   - **scriptPubKey** (hex): the scriptPubKey
   - **type** (string, optional): the purpose of this output (*EXPERIMENTAL_FEATURES* only) (one of "theirs", "deposit", "withdraw", "channel_funding", "channel_mutual_close", "channel_unilateral_close", "channel_sweep", "channel_htlc_success", "channel_htlc_timeout", "channel_penalty", "channel_unilateral_cheat")
-  - **channel** (short_channel_id, optional): the channel this output is associated with (*EXPERIMENTAL_FEATURES* only)
+  - **channel** (short\_channel\_id, optional): the channel this output is associated with (*EXPERIMENTAL_FEATURES* only)
 - **type** (array of strings, optional):
   - Reason we care about this transaction (*EXPERIMENTAL_FEATURES* only) (one of "theirs", "deposit", "withdraw", "channel_funding", "channel_mutual_close", "channel_unilateral_close", "channel_sweep", "channel_htlc_success", "channel_htlc_timeout", "channel_penalty", "channel_unilateral_cheat")
-- **channel** (short_channel_id, optional): the channel this transaction is associated with (*EXPERIMENTAL_FEATURES* only)
+- **channel** (short\_channel\_id, optional): the channel this transaction is associated with (*EXPERIMENTAL_FEATURES* only)
 
 [comment]: # (GENERATE-FROM-SCHEMA-END)
   
@@ -104,4 +105,4 @@ RESOURCES
 ---------
 
 Main web site: <https://github.com/ElementsProject/lightning>
-[comment]: # ( SHA256STAMP:4d5d2f1cea0668b3e58e73a93fe6d217ac4a8c740bed09fcdce21c9e72daae99)
+[comment]: # ( SHA256STAMP:f7c39908eaa1a2561597c8f97658b873953daab0a68ed2e9b68e434a55d55efe)

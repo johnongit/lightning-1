@@ -42,6 +42,7 @@ RETURN VALUE
 
 [comment]: # (GENERATE-FROM-SCHEMA-START)
 On success, an object is returned, containing:
+
 - **tx** (hex): the fully signed bitcoin transaction
 - **txid** (txid): the transaction id of *tx*
 - **psbt** (string): the PSBT representing the unsigned transaction
@@ -73,4 +74,4 @@ RESOURCES
 
 Main web site: <https://github.com/ElementsProject/lightning>
 
-[comment]: # ( SHA256STAMP:ee610c5e83e620125e8583022768f0c3293db2326e879b248e67eaddd655c18e)
+[comment]: # ( SHA256STAMP:fcfd3c91a3cee9bbd36e86edccb5d6407b19c2beda7de1f51ebba5fbd1c2340a)

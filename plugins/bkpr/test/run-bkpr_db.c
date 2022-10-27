@@ -97,6 +97,10 @@ int htlc_state_flags(enum htlc_state state UNNEEDED)
 /* Generated stub for htlc_state_name */
 const char *htlc_state_name(enum htlc_state s UNNEEDED)
 { fprintf(stderr, "htlc_state_name called!\n"); abort(); }
+/* Generated stub for json_get_id */
+const char *json_get_id(const tal_t *ctx UNNEEDED,
+			const char *buffer UNNEEDED, const jsmntok_t *obj UNNEEDED)
+{ fprintf(stderr, "json_get_id called!\n"); abort(); }
 /* Generated stub for json_get_member */
 const jsmntok_t *json_get_member(const char *buffer UNNEEDED, const jsmntok_t tok[] UNNEEDED,
 				 const char *label UNNEEDED)
@@ -159,9 +163,6 @@ bool json_to_short_channel_id(const char *buffer UNNEEDED, const jsmntok_t *tok 
 bool json_to_txid(const char *buffer UNNEEDED, const jsmntok_t *tok UNNEEDED,
 		  struct bitcoin_txid *txid UNNEEDED)
 { fprintf(stderr, "json_to_txid called!\n"); abort(); }
-/* Generated stub for json_to_u64 */
-bool json_to_u64(const char *buffer UNNEEDED, const jsmntok_t *tok UNNEEDED, u64 *num UNNEEDED)
-{ fprintf(stderr, "json_to_u64 called!\n"); abort(); }
 /* Generated stub for json_tok_bin_from_hex */
 u8 *json_tok_bin_from_hex(const tal_t *ctx UNNEEDED, const char *buffer UNNEEDED, const jsmntok_t *tok UNNEEDED)
 { fprintf(stderr, "json_tok_bin_from_hex called!\n"); abort(); }
@@ -288,7 +289,7 @@ int main(int argc, char *argv[])
 	bool ok = true;
 	/* Dummy for migration hooks */
 	struct plugin *plugin = tal(NULL, struct plugin);
-	plugin->js_arr = tal_arr(plugin, struct json_stream *, 0);
+	list_head_init(&plugin->js_list);
 
 	common_setup(argv[0]);
 

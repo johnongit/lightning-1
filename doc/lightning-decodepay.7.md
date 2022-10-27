@@ -17,19 +17,20 @@ RETURN VALUE
 
 [comment]: # (GENERATE-FROM-SCHEMA-START)
 On success, an object is returned, containing:
+
 - **currency** (string): the BIP173 name for the currency
-- **created_at** (u64): the UNIX-style timestamp of the invoice
+- **created\_at** (u64): the UNIX-style timestamp of the invoice
 - **expiry** (u64): the number of seconds this is valid after *timestamp*
 - **payee** (pubkey): the public key of the recipient
-- **payment_hash** (hex): the hash of the *payment_preimage* (always 64 characters)
+- **payment\_hash** (hex): the hash of the *payment_preimage* (always 64 characters)
 - **signature** (signature): signature of the *payee* on this invoice
-- **min_final_cltv_expiry** (u32): the minimum CLTV delay for the final node
-- **amount_msat** (msat, optional): Amount the invoice asked for
+- **min\_final\_cltv\_expiry** (u32): the minimum CLTV delay for the final node
+- **amount\_msat** (msat, optional): Amount the invoice asked for
 - **description** (string, optional): the description of the purpose of the purchase
-- **description_hash** (hex, optional): the hash of the description, in place of *description* (always 64 characters)
-- **payment_secret** (hex, optional): the secret to hand to the payee node (always 64 characters)
+- **description\_hash** (hex, optional): the hash of the description, in place of *description* (always 64 characters)
+- **payment\_secret** (hex, optional): the secret to hand to the payee node (always 64 characters)
 - **features** (hex, optional): the features bitmap for this invoice
-- **payment_metadata** (hex, optional): the payment_metadata to put in the payment
+- **payment\_metadata** (hex, optional): the payment_metadata to put in the payment
 - **fallbacks** (array of objects, optional): onchain addresses:
   - **type** (string): the address type (if known) (one of "P2PKH", "P2SH", "P2WPKH", "P2WSH")
   - **hex** (hex): Raw encoded address
@@ -37,10 +38,10 @@ On success, an object is returned, containing:
 - **routes** (array of arrays, optional): Route hints to the *payee*:
   - hops in the route:
     - **pubkey** (pubkey): the public key of the node
-    - **short_channel_id** (short_channel_id): a channel to the next peer
-    - **fee_base_msat** (msat): the base fee for payments
-    - **fee_proportional_millionths** (u32): the parts-per-million fee for payments
-    - **cltv_expiry_delta** (u32): the CLTV delta across this hop
+    - **short\_channel\_id** (short\_channel\_id): a channel to the next peer
+    - **fee\_base\_msat** (msat): the base fee for payments
+    - **fee\_proportional\_millionths** (u32): the parts-per-million fee for payments
+    - **cltv\_expiry\_delta** (u32): the CLTV delta across this hop
 - **extra** (array of objects, optional): Any extra fields we didn't know how to parse:
   - **tag** (string): The bech32 letter which identifies this field (always 1 characters)
   - **data** (string): The bech32 data for this field
@@ -63,11 +64,11 @@ SEE ALSO
 lightning-pay(7), lightning-getroute(7), lightning-sendpay(7).
 
 [BOLT
-\#11](https://github.com/lightningnetwork/lightning-rfc/blob/master/11-payment-encoding.md).
+\#11](https://github.com/lightning/bolts/blob/master/11-payment-encoding.md).
 
 RESOURCES
 ---------
 
 Main web site: <https://github.com/ElementsProject/lightning>
 
-[comment]: # ( SHA256STAMP:e6e27ff57a8e26db5d4bba8be2a5faa6f1c58b20ef625f371e6e66d17932f8a0)
+[comment]: # ( SHA256STAMP:c98fd8cac46b5446ff2d01ede6b082f64a83d4b5745d06e410af3e1dd91be8e2)

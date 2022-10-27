@@ -18,6 +18,7 @@ RETURN VALUE
 
 [comment]: # (GENERATE-FROM-SCHEMA-START)
 On success, an object is returned, containing:
+
 - **perkw** (u32, optional): Value of *feerate_str* in kilosipa
 
 [comment]: # (GENERATE-FROM-SCHEMA-END)
@@ -43,4 +44,4 @@ RESOURCES
 
 Main web site: <https://github.com/ElementsProject/lightning>
 
-[comment]: # ( SHA256STAMP:f3498aa6f16d5be0a49896ae67144558df1baa223ac396a90ddf2d89a42ff395)
+[comment]: # ( SHA256STAMP:62a45d5091e5bdb4581a2986a66681616315999b8497038864ece8e3308c3f50)

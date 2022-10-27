@@ -68,28 +68,7 @@ RUN apt-get update -qq && \
         python3-pip \
         python3-venv \
         python3-setuptools \
-        wget \
-        libcurl4-gnutls-dev \
-        autoconf \
-        build-essential \
-        libev-dev \
-        autoconf-archive \
-        pkg-config \
-        libsqlite3-dev \ 
-        libsodium-dev \
-        zlib1g-dev \
-        libgmp-dev \
-        valgrind \
-        libpq-dev
-
-
-RUN git clone https://github.com/ZmnSCPxj/clboss.git && \
-    cd clboss && \
-    git checkout 0.13A && \
-    autoreconf -i && \
-    ./configure && make && \
-    make install
-
+        wget
 
 RUN wget -q https://zlib.net/zlib-1.2.13.tar.gz \
 && tar xvf zlib-1.2.13.tar.gz \

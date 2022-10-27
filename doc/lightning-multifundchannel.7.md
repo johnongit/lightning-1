@@ -99,13 +99,14 @@ do not have a channel even if **multifundchannel** succeeded.
 
 [comment]: # (GENERATE-FROM-SCHEMA-START)
 On success, an object is returned, containing:
+
 - **tx** (hex): The raw transaction which funded the channel
 - **txid** (txid): The txid of the transaction which funded the channel
-- **channel_ids** (array of objects):
+- **channel\_ids** (array of objects):
   - **id** (pubkey): The peer we opened the channel with
   - **outnum** (u32): The 0-based output index showing which output funded the channel
-  - **channel_id** (hex): The channel_id of the resulting channel (always 64 characters)
-  - **close_to** (hex, optional): The raw scriptPubkey which mutual close will go to; only present if *close_to* parameter was specified and peer supports `option_upfront_shutdown_script`
+  - **channel\_id** (hex): The channel_id of the resulting channel (always 64 characters)
+  - **close\_to** (hex, optional): The raw scriptPubkey which mutual close will go to; only present if *close_to* parameter was specified and peer supports `option_upfront_shutdown_script`
 - **failed** (array of objects, optional): any peers we failed to open with (if *minchannels* was specified less than the number of destinations):
   - **id** (pubkey): The peer we failed to open the channel with
   - **method** (string): What stage we failed at (one of "connect", "openchannel_init", "fundchannel_start", "fundchannel_complete")
@@ -158,4 +159,4 @@ RESOURCES
 ---------
 
 Main web site: <https://github.com/ElementsProject/lightning>
-[comment]: # ( SHA256STAMP:49c7f69eb4b532802c465ac5d0421cdad176f6a28c4c8e4c1c3ee0a94faad5bf)
+[comment]: # ( SHA256STAMP:a507d57bbf36455924497c8354f41e225bc16f63f12fe01b4f7c4af37f0c6960)

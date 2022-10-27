@@ -61,7 +61,6 @@ static bool is_msg_gossip_broadcast(const u8 *cursor)
 	case WIRE_QUERY_CHANNEL_RANGE:
 	case WIRE_REPLY_CHANNEL_RANGE:
 	case WIRE_ONION_MESSAGE:
-	case WIRE_OBS2_ONION_MESSAGE:
 	case WIRE_WARNING:
 	case WIRE_INIT:
 	case WIRE_PING:
@@ -71,7 +70,7 @@ static bool is_msg_gossip_broadcast(const u8 *cursor)
 	case WIRE_ACCEPT_CHANNEL:
 	case WIRE_FUNDING_CREATED:
 	case WIRE_FUNDING_SIGNED:
-	case WIRE_FUNDING_LOCKED:
+	case WIRE_CHANNEL_READY:
 	case WIRE_SHUTDOWN:
 	case WIRE_CLOSING_SIGNED:
 	case WIRE_UPDATE_ADD_HTLC:

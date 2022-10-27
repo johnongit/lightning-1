@@ -96,11 +96,12 @@ RETURN VALUE
 
 [comment]: # (GENERATE-FROM-SCHEMA-START)
 On success, an object is returned, containing:
-- **offer_id** (hex): the id of this offer (merkle hash of non-signature fields) (always 64 characters)
+
+- **offer\_id** (hex): the id of this offer (merkle hash of non-signature fields) (always 64 characters)
 - **active** (boolean): whether this can still be used (always *true*)
-- **single_use** (boolean): whether this expires as soon as it's paid (reflects the *single_use* parameter)
+- **single\_use** (boolean): whether this expires as soon as it's paid (reflects the *single_use* parameter)
 - **bolt12** (string): the bolt12 encoding of the offer
-- **bolt12_unsigned** (string): the bolt12 encoding of the offer, without a signature
+- **bolt12\_unsigned** (string): the bolt12 encoding of the offer, without a signature
 - **used** (boolean): True if an associated invoice has been paid
 - **created** (boolean): false if the offer already existed
 - **label** (string, optional): the (optional) user-specified label
@@ -134,4 +135,4 @@ RESOURCES
 
 Main web site: <https://github.com/ElementsProject/lightning>
 
-[comment]: # ( SHA256STAMP:3b7b337e724de4cd867dbbf65700a20d92db728892394f4d0229af70659fd7e2)
+[comment]: # ( SHA256STAMP:aa7544c07d3d84963e43500a367ceb62ebab8f5ae26de1dd39bb087f928dcaee)

@@ -34,8 +34,9 @@ RETURN VALUE
 
 [comment]: # (GENERATE-FROM-SCHEMA-START)
 On success, an object is returned, containing:
-- **csv_file** (string): File that the csv was generated to
-- **csv_format** (string): Format to print csv as (one of "cointracker", "koinly", "harmony", "quickbooks")
+
+- **csv\_file** (string): File that the csv was generated to
+- **csv\_format** (string): Format to print csv as (one of "cointracker", "koinly", "harmony", "quickbooks")
 
 [comment]: # (GENERATE-FROM-SCHEMA-END)
 
@@ -56,4 +57,4 @@ RESOURCES
 
 Main web site: <https://github.com/ElementsProject/lightning>
 
-[comment]: # ( SHA256STAMP:e6000f40905c4fa23a5115e8bc82f4f1556f55118fb4ede41dd5e54957da0fa3)
+[comment]: # ( SHA256STAMP:1375c000d025b6cb72daa3b2ea64ec3212ae1aa5552c0d87918fd869d2fc5a0b)

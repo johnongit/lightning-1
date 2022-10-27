@@ -12,7 +12,7 @@ static bool unknown_type(enum peer_wire t)
 	case WIRE_ACCEPT_CHANNEL:
 	case WIRE_FUNDING_CREATED:
 	case WIRE_FUNDING_SIGNED:
-	case WIRE_FUNDING_LOCKED:
+	case WIRE_CHANNEL_READY:
 	case WIRE_SHUTDOWN:
 	case WIRE_CLOSING_SIGNED:
 	case WIRE_UPDATE_ADD_HTLC:
@@ -35,7 +35,6 @@ static bool unknown_type(enum peer_wire t)
 	case WIRE_QUERY_CHANNEL_RANGE:
 	case WIRE_REPLY_CHANNEL_RANGE:
 	case WIRE_GOSSIP_TIMESTAMP_FILTER:
-	case WIRE_OBS2_ONION_MESSAGE:
 	case WIRE_ONION_MESSAGE:
 	case WIRE_TX_ADD_INPUT:
 	case WIRE_TX_REMOVE_INPUT:
@@ -75,7 +74,7 @@ bool is_msg_for_gossipd(const u8 *cursor)
 	case WIRE_ACCEPT_CHANNEL:
 	case WIRE_FUNDING_CREATED:
 	case WIRE_FUNDING_SIGNED:
-	case WIRE_FUNDING_LOCKED:
+	case WIRE_CHANNEL_READY:
 	case WIRE_SHUTDOWN:
 	case WIRE_CLOSING_SIGNED:
 	case WIRE_UPDATE_ADD_HTLC:
@@ -99,7 +98,6 @@ bool is_msg_for_gossipd(const u8 *cursor)
 	case WIRE_ACCEPT_CHANNEL2:
 	case WIRE_INIT_RBF:
 	case WIRE_ACK_RBF:
-	case WIRE_OBS2_ONION_MESSAGE:
 	case WIRE_ONION_MESSAGE:
 #if EXPERIMENTAL_FEATURES
 	case WIRE_STFU:
@@ -139,7 +137,6 @@ bool extract_channel_id(const u8 *in_pkt, struct channel_id *channel_id)
 	case WIRE_QUERY_CHANNEL_RANGE:
 	case WIRE_REPLY_CHANNEL_RANGE:
 	case WIRE_GOSSIP_TIMESTAMP_FILTER:
-	case WIRE_OBS2_ONION_MESSAGE:
 	case WIRE_ONION_MESSAGE:
 		return false;
 
@@ -242,9 +239,9 @@ bool extract_channel_id(const u8 *in_pkt, struct channel_id *channel_id)
 		 * 2. data:
 		 *     * [`channel_id`:`channel_id`]
 		 */
-	case WIRE_FUNDING_LOCKED:
+	case WIRE_CHANNEL_READY:
 		/* BOLT #2:
-		 * 1. type: 36 (`funding_locked`)
+		 * 1. type: 36 (`channel_ready`)
 		 * 2. data:
 		 *     * [`channel_id`:`channel_id`]
 		 */

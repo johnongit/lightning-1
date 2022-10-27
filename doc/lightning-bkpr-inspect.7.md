@@ -18,20 +18,21 @@ RETURN VALUE
 
 [comment]: # (GENERATE-FROM-SCHEMA-START)
 On success, an object containing **txs** is returned.  It is an array of objects, where each object contains:
+
 - **txid** (txid): transaction id
-- **fees_paid_msat** (msat): Amount paid in sats for this tx
+- **fees\_paid\_msat** (msat): Amount paid in sats for this tx
 - **outputs** (array of objects):
   - **account** (string): Account this output affected
   - **outnum** (u32): Index of output
-  - **output_value_msat** (msat): Value of the output
+  - **output\_value\_msat** (msat): Value of the output
   - **currency** (string): human-readable bech32 part for this coin type
-  - **credit_msat** (msat, optional): Amount credited to account
-  - **debit_msat** (msat, optional): Amount debited from account
-  - **originating_account** (string, optional): Account this output originated from
-  - **output_tag** (string, optional): Description of output creation event
-  - **spend_tag** (string, optional): Description of output spend event
-  - **spending_txid** (txid, optional): Transaction this output was spent in
-  - **payment_id** (hex, optional): lightning payment identifier. For an htlc, this will be the preimage.
+  - **credit\_msat** (msat, optional): Amount credited to account
+  - **debit\_msat** (msat, optional): Amount debited from account
+  - **originating\_account** (string, optional): Account this output originated from
+  - **output\_tag** (string, optional): Description of output creation event
+  - **spend\_tag** (string, optional): Description of output spend event
+  - **spending\_txid** (txid, optional): Transaction this output was spent in
+  - **payment\_id** (hex, optional): lightning payment identifier. For an htlc, this will be the preimage.
 - **blockheight** (u32, optional): Blockheight of transaction
 
 [comment]: # (GENERATE-FROM-SCHEMA-END)
@@ -51,4 +52,4 @@ RESOURCES
 
 Main web site: <https://github.com/ElementsProject/lightning>
 
-[comment]: # ( SHA256STAMP:9df98d40e1ed1b0c72f4a4e8c00d243e10f159b99c534818f04631ec3d17a445)
+[comment]: # ( SHA256STAMP:ea50ea813e46669b522ebd466619ac6f7a4be5ae38b4f976a7db70a3c01b7fae)

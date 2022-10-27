@@ -31,7 +31,8 @@ RETURN VALUE
 
 [comment]: # (GENERATE-FROM-SCHEMA-START)
 On success, an object is returned, containing:
-- **channel_id** (hex): the channel id of the channel (always 64 characters)
+
+- **channel\_id** (hex): the channel id of the channel (always 64 characters)
 - **tx** (hex): the funding transaction
 - **txid** (txid): The txid of the **tx**
 
@@ -66,4 +67,4 @@ RESOURCES
 ---------
 
 Main web site: <https://github.com/ElementsProject/lightning>
-[comment]: # ( SHA256STAMP:304d819b092e1d9ce7b4cd8ef08ecdd7952b454fed59e908ab1af02b50e9a0b0)
+[comment]: # ( SHA256STAMP:41e2a4aed1aaac01675f99e91326197afa370a05e32b2ef20cbbb8247de57289)
