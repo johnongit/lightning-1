@@ -70,9 +70,9 @@ RUN apt-get update -qq && \
         python3-setuptools \
         wget
 
-RUN wget -q https://zlib.net/zlib-1.2.13.tar.gz \
-&& tar xvf zlib-1.2.13.tar.gz \
-&& cd zlib-1.2.13 \
+RUN wget -q https://zlib.net/zlib-1.2.12.tar.gz \
+&& tar xvf zlib-1.2.12.tar.gz \
+&& cd zlib-1.2.12 \
 && ./configure \
 && make \
 && make install && cd .. && rm zlib-1.2.13.tar.gz && rm -rf zlib-1.2.13
@@ -106,7 +106,6 @@ ENV PYTHON_VERSION=3
 RUN curl -sSL https://raw.githubusercontent.com/python-poetry/poetry/master/install-poetry.py | python3 - \
     && pip3 install -U pip \
     && pip3 install -U wheel \
-    && pip3 install -U mako \
     && /root/.local/bin/poetry config virtualenvs.create false \
     && /root/.local/bin/poetry install
 
@@ -134,6 +133,12 @@ RUN cargo install --path watchtower-plugin
 #    pip3 install pyln-client==0.10.1 && \
 #    cd /python-teos && COMMON_ONLY=1 pip3 install . 
 
+RUN mkdir -p /python-plugin/plugins  && \
+    git clone https://github.com/talaia-labs/python-teos.git && \
+    cd python-teos &&  pip3 install -r requirements.txt && \
+    cd watchtower-plugin && pip3 install -r requirements.txt && \
+    pip3 install pyln-client==0.10.1 && \
+    cd /python-teos && COMMON_ONLY=1 pip3 install . 
 
 ## Install cln-rest for RTL
 RUN mkdir -p /python-plugin/plugins \
