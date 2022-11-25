@@ -278,6 +278,7 @@ message ListfundsOutputs {
 		UNCONFIRMED = 0;
 		CONFIRMED = 1;
 		SPENT = 2;
+		IMMATURE = 3;
 	}
 	bytes txid = 1;
 	uint32 output = 2;
@@ -309,7 +310,7 @@ message SendpayRequest {
 	optional string bolt11 = 5;
 	optional bytes payment_secret = 6;
 	optional uint32 partid = 7;
-	optional bytes localofferid = 8;
+	optional bytes localinvreqid = 11;
 	optional uint64 groupid = 9;
 }
 
@@ -480,7 +481,7 @@ message CreateinvoiceResponse {
 	optional uint64 paid_at = 11;
 	optional bytes payment_preimage = 12;
 	optional bytes local_offer_id = 13;
-	optional string payer_note = 14;
+	optional string invreq_payer_note = 15;
 }
 
 message DatastoreRequest {
@@ -570,7 +571,7 @@ message DelinvoiceResponse {
 	DelinvoiceStatus status = 7;
 	uint64 expires_at = 8;
 	optional bytes local_offer_id = 9;
-	optional string payer_note = 10;
+	optional string invreq_payer_note = 11;
 }
 
 message InvoiceRequest {
@@ -639,7 +640,7 @@ message ListinvoicesInvoices {
 	optional string bolt11 = 7;
 	optional string bolt12 = 8;
 	optional bytes local_offer_id = 9;
-	optional string payer_note = 10;
+	optional string invreq_payer_note = 15;
 	optional uint64 pay_index = 11;
 	optional Amount amount_received_msat = 12;
 	optional uint64 paid_at = 13;
@@ -655,7 +656,7 @@ message SendonionRequest {
 	optional string bolt11 = 7;
 	optional Amount amount_msat = 12;
 	optional bytes destination = 9;
-	optional bytes localofferid = 10;
+	optional bytes localinvreqid = 13;
 	optional uint64 groupid = 11;
 }
 
@@ -797,7 +798,7 @@ message PayRequest {
 	optional uint32 retry_for = 5;
 	optional uint32 maxdelay = 6;
 	optional Amount exemptfee = 7;
-	optional bytes localofferid = 9;
+	optional bytes localinvreqid = 14;
 	repeated string exclude = 10;
 	optional Amount maxfee = 11;
 	optional string description = 12;
@@ -968,6 +969,7 @@ message KeysendRequest {
 	optional uint32 maxdelay = 6;
 	optional Amount exemptfee = 7;
 	optional RoutehintList routehints = 8;
+	optional TlvStream extratlvs = 9;
 }
 
 message KeysendResponse {
@@ -984,9 +986,6 @@ message KeysendResponse {
 	Amount amount_sent_msat = 7;
 	optional string warning_partial_completion = 8;
 	KeysendStatus status = 9;
-}
-
-message KeysendExtratlvs {
 }
 
 message FundpsbtRequest {

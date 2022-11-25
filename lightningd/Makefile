@@ -99,8 +99,10 @@ LIGHTNINGD_COMMON_OBJS :=			\
 	common/htlc_state.o			\
 	common/htlc_trim.o			\
 	common/htlc_wire.o			\
+	common/invoice_path_id.o		\
 	common/key_derive.o			\
 	common/keyset.o				\
+	common/json_filter.o			\
 	common/json_param.o			\
 	common/json_parse.o			\
 	common/json_parse_simple.o		\
@@ -109,7 +111,8 @@ LIGHTNINGD_COMMON_OBJS :=			\
 	common/memleak.o			\
 	common/msg_queue.o			\
 	common/node_id.o			\
-	common/onion.o				\
+	common/onion_decode.o			\
+	common/onion_encode.o			\
 	common/onionreply.o			\
 	common/penalty_base.o			\
 	common/per_peer_state.o			\

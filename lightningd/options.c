@@ -635,8 +635,8 @@ static char *opt_force_featureset(const char *optarg,
 	char **parts = tal_strsplit(tmpctx, optarg, "/", STR_EMPTY_OK);
 	if (tal_count(parts) != NUM_FEATURE_PLACE + 1) {
 		if (!strstarts(optarg, "-") && !strstarts(optarg, "+"))
-			return "Expected 5 feature sets (init/globalinit/"
-			       " node_announce/channel/bolt11) each terminated by /"
+			return "Expected 8 feature sets (init/globalinit/"
+			       " node_announce/channel/bolt11/b12offer/b12invreq/b12inv) each terminated by /"
 			       " OR +/-<single_bit_num>";
 
 		char *endp;
@@ -752,6 +752,11 @@ static void dev_register_opts(struct lightningd *ld)
 	opt_register_noarg("--dev-no-ping-timer", opt_set_bool,
 			   &ld->dev_no_ping_timer,
 			   "Don't hang up if we don't get a ping response");
+	opt_register_arg("--dev-onion-reply-length",
+			 opt_set_uintval,
+			 opt_show_uintval,
+			 &dev_onion_reply_length,
+			 "Send onion errors of custom length");
 }
 #endif /* DEVELOPER */
 

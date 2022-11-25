@@ -7,4 +7,5 @@
 struct command_result *handle_invoice(struct command *cmd,
 				      const u8 *invbin,
 				      struct blinded_path *reply_path STEALS);
+
 #endif /* LIGHTNING_PLUGINS_OFFERS_INV_HOOK_H */

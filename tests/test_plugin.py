@@ -416,7 +416,7 @@ def test_pay_plugin(node_factory):
 
     # Make sure usage messages are present.
     msg = 'pay bolt11 [amount_msat] [label] [riskfactor] [maxfeepercent] '\
-          '[retry_for] [maxdelay] [exemptfee] [localofferid] [exclude] '\
+          '[retry_for] [maxdelay] [exemptfee] [localinvreqid] [exclude] '\
           '[maxfee] [description]'
     if DEVELOPER:
         msg += ' [use_shadow]'
@@ -1042,7 +1042,7 @@ def test_channel_state_change_history(node_factory, bitcoind):
         assert(history[3]['message'] == "Closing complete")
 
 
-@pytest.mark.developer("without DEVELOPER=1, gossip v slow")
+@pytest.mark.developer("Gossip slow, and we test --dev-onion-reply-length")
 def test_htlc_accepted_hook_fail(node_factory):
     """Send payments from l1 to l2, but l2 just declines everything.
 
@@ -1053,7 +1053,8 @@ def test_htlc_accepted_hook_fail(node_factory):
     """
     l1, l2, l3 = node_factory.line_graph(3, opts=[
         {},
-        {'plugin': os.path.join(os.getcwd(), 'tests/plugins/fail_htlcs.py')},
+        {'dev-onion-reply-length': 1111,
+         'plugin': os.path.join(os.getcwd(), 'tests/plugins/fail_htlcs.py')},
         {}
     ], wait_for_announce=True)
 
@@ -1500,8 +1501,9 @@ def test_libplugin(node_factory):
 
     myname = os.path.splitext(os.path.basename(sys.argv[0]))[0]
 
-    # Side note: getmanifest will trace back to plugin_start
-    l1.daemon.wait_for_log(r": {}:plugin#[0-9]*/cln:getmanifest#[0-9]*\[OUT\]".format(myname))
+    # Note: getmanifest always uses numeric ids, since it doesn't know
+    # yet whether strings are allowed:
+    l1.daemon.wait_for_log(r"test_libplugin: [0-9]*\[OUT\]")
 
     # Test commands
     assert l1.rpc.call("helloworld") == {"hello": "world"}

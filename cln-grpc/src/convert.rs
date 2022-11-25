@@ -348,7 +348,7 @@ impl From<responses::CreateinvoiceResponse> for pb::CreateinvoiceResponse {
             paid_at: c.paid_at, // Rule #2 for type u64?
             payment_preimage: c.payment_preimage.map(|v| v.to_vec()), // Rule #2 for type secret?
             local_offer_id: c.local_offer_id.map(|v| hex::decode(v).unwrap()), // Rule #2 for type hex?
-            payer_note: c.payer_note, // Rule #2 for type string?
+            invreq_payer_note: c.invreq_payer_note, // Rule #2 for type string?
         }
     }
 }
@@ -408,7 +408,7 @@ impl From<responses::DelinvoiceResponse> for pb::DelinvoiceResponse {
             status: c.status as i32,
             expires_at: c.expires_at, // Rule #2 for type u64
             local_offer_id: c.local_offer_id.map(|v| hex::decode(v).unwrap()), // Rule #2 for type hex?
-            payer_note: c.payer_note, // Rule #2 for type string?
+            invreq_payer_note: c.invreq_payer_note, // Rule #2 for type string?
         }
     }
 }
@@ -464,7 +464,7 @@ impl From<responses::ListinvoicesInvoices> for pb::ListinvoicesInvoices {
             bolt11: c.bolt11, // Rule #2 for type string?
             bolt12: c.bolt12, // Rule #2 for type string?
             local_offer_id: c.local_offer_id.map(|v| hex::decode(v).unwrap()), // Rule #2 for type hex?
-            payer_note: c.payer_note, // Rule #2 for type string?
+            invreq_payer_note: c.invreq_payer_note, // Rule #2 for type string?
             pay_index: c.pay_index, // Rule #2 for type u64?
             amount_received_msat: c.amount_received_msat.map(|f| f.into()), // Rule #2 for type msat?
             paid_at: c.paid_at, // Rule #2 for type u64?
@@ -1057,7 +1057,7 @@ impl From<pb::SendpayRequest> for requests::SendpayRequest {
             bolt11: c.bolt11, // Rule #1 for type string?
             payment_secret: c.payment_secret.map(|v| v.try_into().unwrap()), // Rule #1 for type secret?
             partid: c.partid.map(|v| v as u16), // Rule #1 for type u16?
-            localofferid: c.localofferid.map(|v| hex::encode(v)), // Rule #1 for type hex?
+            localinvreqid: c.localinvreqid.map(|v| hex::encode(v)), // Rule #1 for type hex?
             groupid: c.groupid, // Rule #1 for type u64?
         }
     }
@@ -1256,7 +1256,7 @@ impl From<pb::SendonionRequest> for requests::SendonionRequest {
             bolt11: c.bolt11, // Rule #1 for type string?
             amount_msat: c.amount_msat.map(|a| a.into()), // Rule #1 for type msat?
             destination: c.destination.map(|v| PublicKey::from_slice(&v).unwrap()), // Rule #1 for type pubkey?
-            localofferid: c.localofferid.map(|v| Sha256::from_slice(&v).unwrap()), // Rule #1 for type hash?
+            localinvreqid: c.localinvreqid.map(|v| Sha256::from_slice(&v).unwrap()), // Rule #1 for type hash?
             groupid: c.groupid, // Rule #1 for type u64?
         }
     }
@@ -1293,7 +1293,7 @@ impl From<pb::PayRequest> for requests::PayRequest {
             retry_for: c.retry_for.map(|v| v as u16), // Rule #1 for type u16?
             maxdelay: c.maxdelay.map(|v| v as u16), // Rule #1 for type u16?
             exemptfee: c.exemptfee.map(|a| a.into()), // Rule #1 for type msat?
-            localofferid: c.localofferid.map(|v| hex::encode(v)), // Rule #1 for type hex?
+            localinvreqid: c.localinvreqid.map(|v| hex::encode(v)), // Rule #1 for type hex?
             exclude: Some(c.exclude.into_iter().map(|s| s.into()).collect()), // Rule #4
             maxfee: c.maxfee.map(|a| a.into()), // Rule #1 for type msat?
             description: c.description, // Rule #1 for type string?
@@ -1375,6 +1375,7 @@ impl From<pb::KeysendRequest> for requests::KeysendRequest {
             maxdelay: c.maxdelay, // Rule #1 for type u32?
             exemptfee: c.exemptfee.map(|a| a.into()), // Rule #1 for type msat?
             routehints: c.routehints.map(|rl| rl.into()), // Rule #1 for type RoutehintList?
+            extratlvs: c.extratlvs.map(|s| s.into()), // Rule #1 for type TlvStream?
         }
     }
 }

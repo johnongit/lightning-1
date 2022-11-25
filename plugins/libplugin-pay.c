@@ -1,6 +1,7 @@
 #include "config.h"
 #include <ccan/array_size/array_size.h>
 #include <ccan/tal/str/str.h>
+#include <common/blindedpay.h>
 #include <common/dijkstra.h>
 #include <common/gossmap.h>
 #include <common/json_stream.h>
@@ -91,7 +92,7 @@ struct payment *payment_new(tal_t *ctx, struct command *cmd,
 		p->features = parent->features;
 		p->id = parent->id;
 		p->local_id = parent->local_id;
-		p->local_offer_id = parent->local_offer_id;
+		p->local_invreq_id = parent->local_invreq_id;
 		p->groupid = parent->groupid;
 		p->invstring = parent->invstring;
 		p->description = parent->description;
@@ -106,7 +107,7 @@ struct payment *payment_new(tal_t *ctx, struct command *cmd,
 		p->description = NULL;
 		/* Caller must set this.  */
 		p->local_id = NULL;
-		p->local_offer_id = NULL;
+		p->local_invreq_id = NULL;
 		p->groupid = 0;
 	}
 
@@ -1598,8 +1599,8 @@ static struct command_result *payment_createonion_success(struct command *cmd,
 	if (p->destination)
 		json_add_node_id(req->js, "destination", p->destination);
 
-	if (p->local_offer_id)
-		json_add_sha256(req->js, "localofferid", p->local_offer_id);
+	if (p->local_invreq_id)
+		json_add_sha256(req->js, "localinvreqid", p->local_invreq_id);
 
 	send_outreq(p->plugin, req);
 	return command_still_pending(cmd);
@@ -1662,6 +1663,33 @@ static void payment_add_hop_onion_payload(struct payment *p,
 	}
 }
 
+static void payment_add_blindedpath(const tal_t *ctx,
+				    struct createonion_hop *hops,
+				    const struct blinded_path *bpath,
+				    struct amount_msat final_amt,
+				    u32 final_cltv)
+{
+	/* It's a bit of a weird API for us, so we convert it back to
+	 * the struct tlv_tlv_payload */
+	u8 **tlvs = blinded_onion_hops(tmpctx, final_amt, final_cltv, bpath);
+
+	for (size_t i = 0; i < tal_count(tlvs); i++) {
+		const u8 *cursor = tlvs[i];
+		size_t max = tal_bytelen(tlvs[i]);
+		/* First one has to use real node_id */
+		if (i == 0)
+			node_id_from_pubkey(&hops[i].pubkey,
+					    &bpath->first_node_id);
+		else
+			node_id_from_pubkey(&hops[i].pubkey,
+					    &bpath->path[i]->blinded_node_id);
+
+		/* Length is prepended, discard that first! */
+		fromwire_bigsize(&cursor, &max);
+		hops[i].tlv_payload = fromwire_tlv_tlv_payload(ctx, &cursor, &max);
+	}
+}
+
 static void payment_compute_onion_payloads(struct payment *p)
 {
 	struct createonion_request *cr;
@@ -1690,7 +1718,9 @@ static void payment_compute_onion_payloads(struct payment *p)
 	cr->assocdata = tal_arr(cr, u8, 0);
 	towire_sha256(&cr->assocdata, p->payment_hash);
 	cr->session_key = NULL;
-	cr->hops = tal_arr(cr, struct createonion_hop, tal_count(p->route));
+	cr->hops = tal_arr(cr, struct createonion_hop,
+			   tal_count(p->route)
+			   + (root->blindedpath ? tal_count(root->blindedpath->path) - 1: 0));
 
 	/* Non-final hops */
 	for (size_t i = 0; i < hopcount - 1; i++) {
@@ -1704,14 +1734,27 @@ static void payment_compute_onion_payloads(struct payment *p)
 					      &p->route[i].scid));
 	}
 
-	/* Final hop */
-	payment_add_hop_onion_payload(
-	    p, &cr->hops[hopcount - 1], &p->route[hopcount - 1],
-	    &p->route[hopcount - 1], true,
-	    root->payment_secret, root->payment_metadata);
-	tal_append_fmt(&routetxt, "%s",
-		       type_to_string(tmpctx, struct short_channel_id,
-				      &p->route[hopcount - 1].scid));
+	/* If we're headed to a blinded path, connect that now. */
+	if (root->blindedpath) {
+		payment_add_blindedpath(cr->hops, cr->hops + hopcount - 1,
+					root->blindedpath,
+					root->blindedfinalamount,
+					root->blindedfinalcltv);
+		tal_append_fmt(&routetxt, "%s -> blinded path (%zu hops)",
+			       type_to_string(tmpctx, struct short_channel_id,
+					      &p->route[hopcount-1].scid),
+			       tal_count(root->blindedpath->path));
+	} else {
+		/* Final hop */
+		payment_add_hop_onion_payload(
+			p, &cr->hops[hopcount - 1], &p->route[hopcount - 1],
+			&p->route[hopcount - 1], true,
+			root->payment_secret,
+			root->payment_metadata);
+		tal_append_fmt(&routetxt, "%s",
+			       type_to_string(tmpctx, struct short_channel_id,
+					      &p->route[hopcount - 1].scid));
+	}
 
 	paymod_log(p, LOG_DBG,
 		   "Created outgoing onion for route: %s", routetxt);
