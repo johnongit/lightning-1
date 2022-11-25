@@ -32,10 +32,6 @@ RUN mkdir -p /python-plugin/plugins \
     git checkout v0.9.0 && \
     npm install
 
-# Install peerswap
-RUN git clone https://github.com/ElementsProject/peerswap.git /plugins/peerswap && \
-    cd /plugins/peerswap &&\
-    make cln-release
 
 ## Install btcli4j
 RUN git clone https://github.com/clightning4j/btcli4j.git /plugins/btcli4j && \
@@ -48,8 +44,6 @@ ENV LIGHTNINGD_RPC_PORT=9835
 ENV LIGHTNINGD_PORT=9735
 ENV LIGHTNINGD_NETWORK=bitcoin
 
-RUN mkdir $LIGHTNINGD_DATA && \
-    touch $LIGHTNINGD_DATA/config
 VOLUME [ "/root/.lightning" ]
 
 
