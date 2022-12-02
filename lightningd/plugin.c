@@ -180,6 +180,9 @@ static void check_plugins_initted(struct plugins *plugins)
 	for (size_t i = 0; i < tal_count(plugin_cmds); i++)
 		plugin_cmd_all_complete(plugins, plugin_cmds[i]);
 	tal_free(plugin_cmds);
+
+	if (plugins->startup)
+		io_break(plugins);
 }
 
 struct command_result *plugin_register_all_complete(struct lightningd *ld,
@@ -1935,7 +1938,7 @@ plugin_config(struct plugin *plugin)
 	plugin->plugin_state = AWAITING_INIT_RESPONSE;
 }
 
-void plugins_config(struct plugins *plugins)
+bool plugins_config(struct plugins *plugins)
 {
 	struct plugin *p;
 	list_for_each(&plugins->plugins, p, list) {
@@ -1943,7 +1946,17 @@ void plugins_config(struct plugins *plugins)
 			plugin_config(p);
 	}
 
+	/* Wait for them to configure, before continuing: large
+	 * nodes can take a while to startup! */
+	if (plugins->startup) {
+		/* This happens if an important plugin fails init,
+		 * or if they call shutdown now. */
+		if (io_loop_with_timers(plugins->ld) == plugins->ld)
+			return false;
+	}
+
 	plugins->startup = false;
+	return true;
 }
 
 /** json_add_opt_plugins_array
